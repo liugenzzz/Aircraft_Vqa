@@ -211,3 +211,148 @@ def test_quota_sample_respects_supply():
             [{"task": "b", "qa_id": "b%d" % i} for i in range(5)])
     out = quota_sample(recs, {"a": 0.5, "b": 0.5}, total=50)
     assert sum(r["task"] == "b" for r in out) <= 5
+
+
+# ------------------------------------------------------------------ 缺陷范围
+def test_active_scope_downgrades_out_of_scope_type(tmp_path):
+    cfg = BuildConfig(max_qa_per_sample=12,
+                      active_defect_types=["fastener_missing", "crack"])
+    b = VQABuilder(cfg, TAX)
+    recs = b.build(_sample(tmp_path, "anomalous", "paint_peeling"))
+    # 降级成 other_anomaly：框还在（定位照做），但不再出类型题
+    assert recs
+    tasks = {r["task"] for r in recs}
+    assert "classification_open" not in tasks and "classification_mc" not in tasks
+    assert any(r["task"].startswith("grounding") for r in recs)
+    for r in recs:
+        assert "漆层剥落" not in r["answer"]
+
+
+def test_active_scope_keeps_in_scope_type(tmp_path):
+    cfg = BuildConfig(max_qa_per_sample=12,
+                      active_defect_types=["fastener_missing", "crack"])
+    b = VQABuilder(cfg, TAX)
+    recs = b.build(_sample(tmp_path, "anomalous", "crack"))
+    assert any("裂纹" in r["answer"] for r in recs)
+
+
+# ------------------------------------------------------------------ 多轮
+def _multi(tmp_path, label="anomalous"):
+    cfg = BuildConfig(max_qa_per_sample=12)
+    cfg.task_weights = dict(cfg.task_weights, multi_turn=1.0)   # 必出，便于断言
+    b = VQABuilder(cfg, TAX)
+    for r in b.build(_sample(tmp_path, label)):
+        if r["task"] == "multi_turn":
+            return r
+    return None
+
+
+def test_multi_turn_structure_and_qc(tmp_path):
+    for label in ("anomalous", "normal"):
+        r = _multi(tmp_path, label)
+        assert r is not None and r["n_turns"] >= 2
+        assert r["family"] == "dialog"
+        assert check_record(r) == [], check_record(r)
+
+
+def test_multi_turn_normal_answers_empty_list(tmp_path):
+    r = _multi(tmp_path, "normal")
+    joined = " ".join(t["answer"] for t in r["turns"])
+    assert "[]" in joined
+    assert "bbox_2d" not in joined
+
+
+def test_qc_catches_boxes_in_normal_dialog():
+    bad = {"task": "multi_turn", "question": "q", "answer": "a", "yes_no": "no",
+           "label": "normal", "coord_mode": "norm1000",
+           "turns": [{"question": "有异常吗", "answer": "未见异常。"},
+                     {"question": "框出来", "answer": '[{"bbox_2d": [1,2,3,4], "label": "x"}]'}]}
+    errs = check_record(bad)
+    assert any("negative_with_boxes" in e for e in errs), errs
+
+
+def test_exporter_emits_all_turns(tmp_path):
+    from aircraft_vqa.export.qwen3vl import to_llamafactory
+    r = _multi(tmp_path, "anomalous")
+    out = to_llamafactory(r)
+    # system + 每轮一问一答
+    assert len(out["messages"]) == 1 + 2 * r["n_turns"]
+    assert out["messages"][1]["content"].startswith("<image>")
+    # 图片 token 只出现一次
+    assert sum(m["content"].count("<image>") for m in out["messages"]
+               if isinstance(m["content"], str)) == 1
+
+
+# ------------------------------------------------------------------ 问法库
+def test_question_bank_merges_and_is_used(tmp_path):
+    import json as _json
+    bank = tmp_path / "bank.json"
+    bank.write_text(_json.dumps({"questions": {
+        "description": ["【扩写测试】说说这个{obj}的状况。"]}}), encoding="utf-8")
+    b = VQABuilder(BuildConfig(max_qa_per_sample=12,
+                               question_bank=str(bank)), TAX)
+    assert "【扩写测试】说说这个{obj}的状况。" in b.qpool["description"]
+    assert len(b.qpool["description"]) > 1      # 种子没被顶掉
+
+
+def test_question_bank_validation_rules():
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "scripts"))
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "gqb", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
+            __file__))), "scripts", "gen_question_bank.py"))
+    gqb = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gqb)
+
+    assert gqb.validate("grounding_single", "框出图中的{defect}（JSON）。", set()) == ""
+    # 缺必需占位符
+    assert gqb.validate("grounding_single", "把缺陷框出来。", set())
+    # 用了池外占位符
+    assert gqb.validate("grounding_single", "定位{defect}在{foo}。", set())
+    # 重复
+    assert gqb.validate("description", "描述{obj}。", {"描述{obj}。"})
+
+
+# ------------------------------------------------------------------ 合成数据
+def test_synthetic_generator_covers_target_defects():
+    import importlib.util
+    import random as _r
+    spec = importlib.util.spec_from_file_location(
+        "mdd", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
+            __file__))), "scripts", "make_demo_data.py"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    names = {c["name"] for c in m.CATEGORIES}
+    assert {"crack", "thread_damage"} <= names
+
+    rng = _r.Random(0)
+    seen = set()
+    for i in range(40):
+        _, anns = m.gen_image(i, rng, (384, 288))
+        seen |= {a["category"] for a in anns}
+    assert "crack" in seen                       # 裂纹只在蒙皮场景
+    seen_c = set()
+    for i in range(40):
+        _, anns = m.gen_closeup(i, rng, (384, 288))
+        seen_c |= {a["category"] for a in anns}
+    assert "thread_damage" in seen_c             # 螺纹损伤只在特写场景
+
+
+def test_synthetic_boxes_inside_image():
+    import importlib.util
+    import random as _r
+    spec = importlib.util.spec_from_file_location(
+        "mdd2", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
+            __file__))), "scripts", "make_demo_data.py"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    rng = _r.Random(1)
+    for gen in (m.gen_image, m.gen_closeup):
+        for i in range(15):
+            img, anns = gen(i, rng, (384, 288))
+            for a in anns:
+                x, y, w, h = a["bbox"]
+                assert x >= 0 and y >= 0
+                assert x + w <= img.width and y + h <= img.height
+                assert w > 0 and h > 0

@@ -21,9 +21,34 @@ def _parse_boxes(ans: str):
     return data if isinstance(data, list) else None
 
 
+def _check_turns(r: dict) -> list:
+    """多轮条目：逐轮按其实际形态校验，并检查轮次结构。"""
+    errs = []
+    turns = r["turns"]
+    if len(turns) < 2:
+        errs.append("too_few_turns")
+    for i, t in enumerate(turns):
+        if not t.get("question") or not t.get("answer"):
+            errs.append(f"empty_turn_{i}")
+            continue
+        if re.search(r"\{[a-z_]+\}", t["question"] + t["answer"]):
+            errs.append(f"unfilled_placeholder_turn_{i}")
+        # 带 JSON 的那一轮按定位规则查
+        if "[" in t["answer"]:
+            probe = dict(r, task="grounding_all", answer=t["answer"],
+                         label=r.get("label"))
+            probe.pop("turns", None)
+            if r.get("yes_no") == "no":
+                probe["task"] = "grounding_negative"
+            errs += [f"turn_{i}_{e}" for e in check_record(probe)]
+    return errs
+
+
 def check_record(r: dict, check_image: bool = False) -> list:
     """返回问题列表，空列表 = 通过。"""
     errs = []
+    if r.get("turns"):
+        errs += _check_turns(r)
     if not r.get("question") or not r.get("answer"):
         errs.append("empty_qa")
     if "{" in r.get("question", "") and "}" in r.get("question", ""):

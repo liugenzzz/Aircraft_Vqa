@@ -150,7 +150,7 @@ datasets:
   # ---------------- 合成数据（本仓库生成，完全可商用） ----------------
   - name: synthetic_panel
     adapter: coco
-    root: "{data_root}/synthetic_panel"
+    root: "{data_root}/synthetic/panel"
     enabled: true
     priority: 1
     license: "自有合成数据"
@@ -160,4 +160,20 @@ datasets:
     object_hint:
       panel: panel
     splits: [train, valid, test]
-    notes: "程序化生成的蒙皮铆钉阵列，可控注入缺失/锈蚀/划伤，带精确 bbox。"
+    notes: "蒙皮铆钉阵列（俯视）：紧固件缺失/松动、锈蚀、划伤、凹坑、漆层剥落、
+      裂纹（从紧固件孔边起裂，符合疲劳裂纹真实萌生位置）。"
+
+  - name: synthetic_closeup
+    adapter: coco
+    root: "{data_root}/synthetic/closeup"
+    enabled: true
+    priority: 1
+    license: "自有合成数据"
+    commercial_ok: true
+    download: scripts/make_demo_data.py
+    category: bolt
+    object_hint:
+      bolt: bolt
+    splits: [train, valid, test]
+    notes: "紧固件特写（侧视）：螺纹损伤、杆部锈蚀、头部划伤。
+      螺纹在俯视铆钉阵列里根本看不见，必须单独出特写场景。"

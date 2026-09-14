@@ -29,6 +29,7 @@ LOCALIZATION_TASKS = ("grounding_single", "grounding_all", "grounding_negative",
                       "referring_region", "counting", "region_word")
 RECOGNITION_TASKS = ("discrimination", "classification_open", "classification_mc",
                      "description", "severity_action", "object_recognition")
+DIALOG_TASKS = ("multi_turn",)
 
 
 @dataclass
@@ -51,11 +52,18 @@ class BuildConfig:
         "description": 0.8,
         "severity_action": 0.6,
         "object_recognition": 0.25,
+        "multi_turn": 0.5,
     })
     enable_tasks: Optional[list] = None   # None = 全开
     n_options: int = 4
     # other_anomaly（源数据没有细粒度类型）时，自动跳过类型类问题
     skip_unknown_type_tasks: bool = True
+    # 本期只做这些缺陷类型；不在名单里的会被降级成 other_anomaly，
+    # 仍可用于定位和有无判定，但不会出"这是什么缺陷"的题。
+    # None = 本体里全部类型都做。
+    active_defect_types: Optional[list] = None
+    # 大模型扩写出的问法库（scripts/gen_question_bank.py 产出）
+    question_bank: Optional[str] = None
 
 
 class VQABuilder:
@@ -63,6 +71,10 @@ class VQABuilder:
                  taxonomy: Optional[Taxonomy] = None):
         self.cfg = cfg or BuildConfig()
         self.tax = taxonomy or get_taxonomy()
+        self.qpool = T.merged_questions(
+            T.load_question_bank(self.cfg.question_bank))
+        self.active = (set(self.cfg.active_defect_types)
+                       if self.cfg.active_defect_types else None)
 
     # ---------------------------------------------------------- 工具
     def _rng(self, sample_id: str) -> random.Random:
@@ -120,11 +132,49 @@ class VQABuilder:
             r.update(extra)
         return r
 
+    def _rec_multi(self, s: UnifiedSample, turns: list, system: str,
+                   extra: Optional[dict] = None) -> dict:
+        """多轮条目：turns = [(问, 答), ...]，第一轮的问题带图。"""
+        r = self._rec(s, "multi_turn", "dialog", turns[0][0], turns[0][1],
+                      system, extra)
+        r["turns"] = [{"question": q, "answer": a} for q, a in turns]
+        r["n_turns"] = len(turns)
+        return r
+
     def _ctx(self, s: UnifiedSample) -> dict:
         return {"obj": s.object_zh, "ctx": s.aircraft_ctx}
 
+    def _pick_q(self, task: str, rng: random.Random, **fields) -> str:
+        """从（种子 + 扩写）问法池里抽一条并填充。"""
+        pool = self.qpool.get(task) or T.QUESTIONS.get(task, [""])
+        return rng.choice(pool).format(**fields)
+
+    def _scope(self, s: UnifiedSample) -> UnifiedSample:
+        """把不在本期范围内的缺陷类型降级为 other_anomaly。
+
+        降级而不是丢弃：这些样本的框依然是真的，定位和"有无异常"照样能用，
+        只是不再声称自己知道它具体是哪一类。
+        """
+        if self.active is None or not s.defects:
+            return s
+        if all(d.type in self.active for d in s.defects):
+            return s
+        import copy
+        s2 = copy.copy(s)
+        s2.defects = []
+        for d in s.defects:
+            if d.type in self.active:
+                s2.defects.append(d)
+            else:
+                d2 = copy.copy(d)
+                d2.type = "other_anomaly"
+                d2.type_zh = self.tax.zh("other_anomaly")
+                s2.defects.append(d2)
+        return s2
+
     # ---------------------------------------------------------- 主入口
     def build(self, s: UnifiedSample) -> list:
+        s = self._scope(s)
         rng = self._rng(s.sample_id)
         cands = []
         if s.is_anomalous:
@@ -187,6 +237,8 @@ class VQABuilder:
             out.append(("severity_action", lambda: self._t_severity(s, rng)))
         if self._enabled("object_recognition"):
             out.append(("object_recognition", lambda: self._t_object(s, rng)))
+        if self._enabled("multi_turn"):
+            out.append(("multi_turn", lambda: self._t_multi_turn(s, rng, loc)))
         return out
 
     # ---------------------------------------------------------- 正常样本
@@ -202,6 +254,8 @@ class VQABuilder:
             out.append(("referring_region", lambda: self._t_referring(s, rng, [])))
         if self._enabled("object_recognition"):
             out.append(("object_recognition", lambda: self._t_object(s, rng)))
+        if self._enabled("multi_turn"):
+            out.append(("multi_turn", lambda: self._t_multi_turn(s, rng, [])))
         return out
 
     # ---------------------------------------------------------- 各任务实现
@@ -210,15 +264,15 @@ class VQABuilder:
         same = [d for d in loc if d.type == t]
         if not same:
             return None
-        q = rng.choice(T.Q_GROUNDING_SINGLE).format(
-            defect=self.tax.zh(t), defect_en=self.tax.en(t), **self._ctx(s))
+        q = self._pick_q("grounding_single", rng, defect=self.tax.zh(t),
+                         defect_en=self.tax.en(t), **self._ctx(s))
         en = self._is_en(q)
         return self._rec(s, "grounding_single", "localization", q,
                          self._boxes_json(s, same, en), T.SYSTEM_PROMPT_GROUNDING,
                          {"target_type": t, "n_boxes": len(same), "lang": "en" if en else "zh"})
 
     def _t_grounding_all(self, s, rng, loc) -> dict:
-        q = rng.choice(T.Q_GROUNDING_ALL).format(**self._ctx(s))
+        q = self._pick_q("grounding_all", rng, **self._ctx(s))
         en = self._is_en(q)
         return self._rec(s, "grounding_all", "localization", q,
                          self._boxes_json(s, loc, en), T.SYSTEM_PROMPT_GROUNDING,
@@ -227,8 +281,8 @@ class VQABuilder:
     def _t_grounding_negative(self, s, rng) -> dict:
         # 正常图也问"找缺陷"，答空列表 —— 这是抑制幻觉最有效的一类样本
         t = rng.choice([k for k in self.tax.all_types() if k != "other_anomaly"])
-        q = rng.choice(T.Q_GROUNDING_NEGATIVE).format(
-            defect=self.tax.zh(t), **self._ctx(s))
+        q = self._pick_q("grounding_negative", rng, defect=self.tax.zh(t),
+                         **self._ctx(s))
         a = ("[]" if self._is_en(q) else
              rng.choice(T.A_GROUNDING_EMPTY).format(defect=self.tax.zh(t), **self._ctx(s)))
         return self._rec(s, "grounding_negative", "localization", q, a,
@@ -239,7 +293,7 @@ class VQABuilder:
         if positive:
             d = rng.choice(loc)
             box = self._qwen_box(s, d.bbox)
-            q = rng.choice(T.Q_REGION_YESNO).format(box=box, **self._ctx(s))
+            q = self._pick_q("referring_region", rng, box=box, **self._ctx(s))
             a = rng.choice(T.A_REGION_POSITIVE).format(
                 box=box, defect=self.tax.zh(d.type), region=d.region or "中部",
                 size=size_word(d.area_ratio),
@@ -251,7 +305,7 @@ class VQABuilder:
             if clean is None:
                 return None
             box = self._qwen_box(s, clean)
-            q = rng.choice(T.Q_REGION_YESNO).format(box=box, **self._ctx(s))
+            q = self._pick_q("referring_region", rng, box=box, **self._ctx(s))
             a = rng.choice(T.A_REGION_NEGATIVE).format(box=box, **self._ctx(s))
             meta = {"region_answer": "no"}
         return self._rec(s, "referring_region", "localization", q, a,
@@ -262,7 +316,7 @@ class VQABuilder:
         same = [d for d in loc if d.type == t]
         if not same:
             return None
-        q = rng.choice(T.Q_COUNT).format(defect=self.tax.zh(t), **self._ctx(s))
+        q = self._pick_q("counting", rng, defect=self.tax.zh(t), **self._ctx(s))
         a = T.A_COUNT.format(n=len(same), defect=self.tax.zh(t),
                              json=self._boxes_json(s, same))
         return self._rec(s, "counting", "localization", q, a, T.SYSTEM_PROMPT,
@@ -270,7 +324,8 @@ class VQABuilder:
 
     def _t_region_word(self, s, rng, loc) -> dict:
         d = rng.choice(loc)
-        q = rng.choice(T.Q_REGION_WORD).format(defect=self.tax.zh(d.type), **self._ctx(s))
+        q = self._pick_q("region_word", rng, defect=self.tax.zh(d.type),
+                         **self._ctx(s))
         a = rng.choice(T.A_REGION_WORD).format(
             defect=self.tax.zh(d.type), region=d.region or "中部",
             size=size_word(d.area_ratio))
@@ -278,7 +333,7 @@ class VQABuilder:
                          {"region": d.region})
 
     def _t_discrimination(self, s, rng) -> dict:
-        q = rng.choice(T.Q_DISCRIMINATION).format(**self._ctx(s))
+        q = self._pick_q("discrimination", rng, **self._ctx(s))
         if s.is_anomalous:
             names = "、".join(self.tax.zh(t) for t in s.defect_types)
             regions = [d.region for d in s.defects if d.region]
@@ -296,7 +351,7 @@ class VQABuilder:
         evidence = ""
         if d.region:
             evidence = f"依据是画面{d.region}处可见相应特征，范围{size_word(d.area_ratio)}。"
-        q = rng.choice(T.Q_CLASSIFY_OPEN).format(**self._ctx(s))
+        q = self._pick_q("classification_open", rng, **self._ctx(s))
         a = rng.choice(T.A_CLASSIFY_OPEN).format(
             defect=self.tax.zh(t), defect_en=self.tax.en(t), evidence=evidence)
         return self._rec(s, "classification_open", "recognition", q, a,
@@ -311,7 +366,7 @@ class VQABuilder:
                           "target_type": s.defect_types[0]})
 
     def _t_describe(self, s, rng) -> dict:
-        q = rng.choice(T.Q_DESCRIBE).format(**self._ctx(s))
+        q = self._pick_q("description", rng, **self._ctx(s))
         if s.is_anomalous:
             items = []
             for d in s.defects[:6]:
@@ -332,7 +387,7 @@ class VQABuilder:
 
     def _t_severity(self, s, rng) -> dict:
         d = max(s.defects, key=lambda x: x.area_ratio)
-        q = rng.choice(T.Q_SEVERITY).format(**self._ctx(s))
+        q = self._pick_q("severity_action", rng, **self._ctx(s))
         a = T.A_SEVERITY.format(
             severity=self.tax.severity_zh(d.severity),
             severity_desc=self.tax.severity_desc(d.severity),
@@ -341,9 +396,40 @@ class VQABuilder:
         return self._rec(s, "severity_action", "recognition", q, a, T.SYSTEM_PROMPT,
                          {"severity": d.severity, "target_type": d.type})
 
+    def _t_multi_turn(self, s, rng, loc) -> dict:
+        """有无 -> 定位 -> 处置 的三轮追问，复刻机务实际问诊流程。"""
+        turns = []
+        t1q = self._pick_q("multi_turn", rng, **self._ctx(s))
+        if s.is_anomalous:
+            names = "、".join(self.tax.zh(t) for t in s.defect_types)
+            regions = list(dict.fromkeys(d.region for d in s.defects if d.region))
+            turns.append((t1q, f"有异常。可见{names}，位于画面"
+                               f"{'、'.join(regions) or '画面中'}。"))
+            if loc:
+                turns.append((rng.choice(T.Q_MT_T2_POS), self._boxes_json(s, loc)))
+            d = max(s.defects, key=lambda x: x.area_ratio)
+            turns.append((rng.choice(T.Q_MT_T3_POS), T.A_SEVERITY.format(
+                severity=self.tax.severity_zh(d.severity),
+                severity_desc=self.tax.severity_desc(d.severity),
+                defect=self.tax.zh(d.type), region=d.region or "中部",
+                size=size_word(d.area_ratio), action=self.tax.action(d.type))))
+        else:
+            turns.append((t1q, rng.choice(T.A_DISCRIMINATION_NEG).format(
+                **self._ctx(s))))
+            t = rng.choice([k for k in (self.active or self.tax.all_types())
+                            if k != "other_anomaly"])
+            turns.append((rng.choice(T.Q_MT_T2_NEG).format(defect=self.tax.zh(t)),
+                          "[]"))
+            turns.append((rng.choice(T.Q_MT_T3_NEG),
+                          rng.choice(T.A_MT_T3_NEG).format(**self._ctx(s))))
+        if len(turns) < 2:
+            return None
+        return self._rec_multi(s, turns, T.SYSTEM_PROMPT,
+                               {"yes_no": "yes" if s.is_anomalous else "no"})
+
     def _t_object(self, s, rng) -> dict:
         info = self.tax.object_info(s.object_name)
         focus = T.OBJECT_FOCUS.get(info.get("role", "unknown"), T.OBJECT_FOCUS["unknown"])
-        q = rng.choice(T.Q_OBJECT).format(**self._ctx(s))
+        q = self._pick_q("object_recognition", rng, **self._ctx(s))
         a = rng.choice(T.A_OBJECT).format(focus=focus, **self._ctx(s))
         return self._rec(s, "object_recognition", "recognition", q, a, T.SYSTEM_PROMPT)

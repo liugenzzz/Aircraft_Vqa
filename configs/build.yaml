@@ -9,6 +9,22 @@ max_qa_per_sample: 4
 n_options: 4
 skip_unknown_type_tasks: true   # 源数据没有细粒度类型时，不出"这是什么缺陷"的题
 
+# 本期做的缺陷类型（8 类）。不在名单里的会降级成 other_anomaly：
+# 框还是真的，定位与"有无异常"照用，只是不再出"这是什么缺陷"的题。
+# 置空 / 删掉这一项 = 本体里 14 类全做。
+active_defect_types:
+  - fastener_missing      # 紧固件缺失
+  - fastener_loose        # 紧固件松动
+  - thread_damage         # 螺纹损伤（只有特写场景能看见）
+  - crack                 # 裂纹（critical）
+  - corrosion             # 腐蚀锈蚀
+  - dent                  # 凹坑
+  - scratch               # 划伤
+  - paint_peeling         # 漆层剥落
+
+# 大模型扩写出的问法库；不存在就只用种子问法，不影响流水线
+question_bank: configs/question_bank.json
+
 # 样本层平衡：每 1 张异常图保留多少张正常图（<=0 不限制）
 normal_per_anomalous: 1.0
 
@@ -21,11 +37,13 @@ task_ratio:
   referring_region: 0.06
   counting: 0.02
   region_word: 0.02
-  # ---- 缺陷识别 45% ----
-  discrimination: 0.10
+  # ---- 多轮追问 8%（有无 -> 定位 -> 处置，复刻机务问诊流程）----
+  multi_turn: 0.08
+  # ---- 缺陷识别 ----
+  discrimination: 0.07
   classification_open: 0.08
   classification_mc: 0.07
-  description: 0.13
+  description: 0.10
   severity_action: 0.05
   object_recognition: 0.02
 

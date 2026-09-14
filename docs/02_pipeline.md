@@ -37,7 +37,27 @@ Roboflow 导出 COCO、腐蚀集是语义分割 mask、Real-IAD 是多视角 JSO
 
 加新数据集时通常只需要在 `aliases` 里追加几个词。
 
-## 3. 两大任务族与 12 个子任务
+## 3. 本期缺陷范围（8 类）
+
+本体里定义了 14 类，但**本期只做 8 类**（`configs/build.yaml` 的
+`active_defect_types`）：
+
+| 族 | 类型 | 严重度 | 主要数据来源 |
+|---|---|---|---|
+| 紧固件 | `fastener_missing` 紧固件缺失 | major | 合成蒙皮 + Roboflow `Missing-head` |
+| | `fastener_loose` 紧固件松动 | major | 合成蒙皮 + Bolt-Rotation |
+| | `thread_damage` 螺纹损伤 | major | **合成特写** + MVTec AD `screw` |
+| 结构 | `crack` 裂纹 | **critical** | **合成蒙皮** + Roboflow `Crack` |
+| | `dent` 凹坑 | major | 合成蒙皮 + UTS |
+| 表面 | `corrosion` 腐蚀锈蚀 | major | 合成 + VT 腐蚀分级 |
+| | `scratch` 划伤 | minor | 合成 + Roboflow |
+| | `paint_peeling` 漆层剥落 | minor | 合成 + Roboflow |
+
+不在名单里的类型会**降级成 `other_anomaly`**而不是丢弃：框依然是真的，
+定位和"有无异常"照常使用，只是不再声称知道它具体属于哪一类。
+想全做就把 `active_defect_types` 置空。
+
+## 4. 两大任务族与 13 个子任务
 
 对标 MMAD 的 7 子任务体系（见调研报告 E1），按项目需求收敛成两族：
 
@@ -51,6 +71,18 @@ Roboflow 导出 COCO、腐蚀集是语义分割 mask、Real-IAD 是多视角 JSO
 | `referring_region` | 给定框问该区域是否异常 | 是/否 + 说明 | 区域级聚焦 |
 | `counting` | 有几处某类缺陷 | 数量 + 逐个框 | 计数一致性 |
 | `region_word` | 缺陷在画面哪个方位 | 九宫格方位词 | 语义定位（不靠坐标）|
+
+### 多轮追问 (dialog)
+
+| 任务 | 说明 |
+|---|---|
+| `multi_turn` | 有无 → 定位 → 处置的三轮追问 |
+
+机务实际是追问式工作流："这有问题吗？"→"在哪？"→"严重吗，怎么处理？"。
+单轮问答学不到**上文承接**（"那它严重吗"里的"它"指什么）。
+正常图的多轮里还塞了一轮"再仔细过一遍，有 XX 的地方都标出来" → `[]`，
+这是对话语境下的负样本，比单轮负样本更难也更有用。
+图片 token 只挂在第一轮，后续轮次靠上下文。
 
 ### 缺陷识别 (recognition)
 
@@ -70,7 +102,7 @@ Roboflow 导出 COCO、腐蚀集是语义分割 mask、Real-IAD 是多视角 JSO
 **`skip_unknown_type_tasks`**：源数据只有"有无异常"两级标签时（VisA 就是），
 构建器会自动跳过"这是什么缺陷"类问题，而不是编一个类型出来。
 
-## 4. 坐标约定（Qwen3-VL）
+## 5. 坐标约定（Qwen3-VL）
 
 Qwen3-VL 原生使用 **[0, 1000] 归一化坐标**，输出形如：
 
@@ -87,7 +119,7 @@ Qwen3-VL 原生使用 **[0, 1000] 归一化坐标**，输出形如：
 问题是英文问法时，框里的 `label` 自动切成英文，避免中英混搭
 （`VQABuilder._is_en`）。
 
-## 5. 两层平衡
+## 6. 两层平衡
 
 1. **样本层**：`normal_per_anomalous`（默认 1.0）下采样正常图。
    VisA 原始正负比约 9:1，直接全用会把模型训成"什么都说没问题"。
@@ -105,13 +137,49 @@ Qwen3-VL 原生使用 **[0, 1000] 归一化坐标**，输出形如：
 （MVTec AD screw、Roboflow aircraft_skin_defects）。
 需要严格服从配比时加 `--ratio-strict`（数据量会小很多）。
 
-## 6. 切分：按图分组，不按条目
+## 7. 切分：按图分组，不按条目
 
 `group_split` 用 `sample_id` 的哈希决定 split，同一张图的所有问答只会落在
 同一个 split。按条目随机切会导致**同一张图既在训练集又在验证集**，
 验证分数虚高，是这类数据集最常见的坑。
 
-## 7. 大模型改写层（可选）
+## 8. 大模型该用在哪一层
+
+大模型有两个可用的切入点，成本差三四个数量级，**优先做第一个**：
+
+### 8.1 扩问法（推荐，一次性几十次调用）
+
+问法是"骨架"：13 个任务 × 每个几条种子。让大模型把它扩成每任务 20~30 条
+不同句式，一次性跑完就固化成 `configs/question_bank.json`，之后构建多少条
+数据都不再调模型。
+
+```bash
+export LLM_API_KEY=sk-xxx
+export LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+python scripts/gen_question_bank.py --model qwen-plus --per-task 25
+python scripts/gen_question_bank.py --dry-run    # 先看会发什么 prompt
+```
+
+扩写结果**逐条校验**后才入库：占位符必须落在该任务的白名单内、必需占位符
+不能少（比如 `grounding_single` 没有 `{defect}` 就不成其为"单目标定位"）、
+能成功 `format()`、不与已有重复。不合格的直接丢弃并报数。
+
+收益：句式多样性上来了，模型不会过拟合到"请在图中定位所有 X"这一种问法。
+成本：十几次调用，几分钟。
+
+### 8.2 润色答案（可选，逐条调用）
+
+`vqa/llm.py` 把模板答案改写得更像一线机务口吻，但有三道保险：
+
+1. **保护名单**：`grounding_*` / `counting` / `classification_mc` / 多轮里带
+   JSON 的轮次，答案是结构化输出，**根本不送去改写**；
+2. **事实指纹比对**：改写前后所有数字和 JSON 片段必须逐字一致，否则回退；
+3. **改写后重跑质检**：不通过就回退模板答案。
+
+只建议对 `description` / `severity_action` 这类叙述性任务开启，
+而且开之前先小批量跑 200 条人工看一眼回退率。
+
+离线环境 `provider: none`，整条流水线照常工作。
 
 模板答案准确但机械。`vqa/llm.py` 用一个辅助大模型（OpenAI 兼容接口，
 DashScope 也走这个）把答案改写得更像一线机务的口吻，但有三道保险：
@@ -123,7 +191,7 @@ DashScope 也走这个）把答案改写得更像一线机务的口吻，但有�
 
 离线环境 `provider: none`，整条流水线照常工作。
 
-## 8. 训练对接
+## 9. 训练对接
 
 ```bash
 # LLaMA-Factory（默认格式）

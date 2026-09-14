@@ -166,3 +166,104 @@ NEGATIVE_ASPECTS = [
     "裂纹、凹坑等结构损伤",
     "漆层剥落或划伤",
 ]
+
+
+# ---------------------------------------------------------------- 多轮
+
+# 机务实际的问法是追问式的：先问有没有问题，再问在哪，最后问怎么处理。
+# 单轮问答学不到这个流程，也学不到"承接上文指代"（"那它严重吗"里的"它"）。
+Q_MT_T1 = [
+    "先看一下这张{obj}照片，有没有异常？",
+    "这个{ctx}，外观检查过得去吗？",
+]
+Q_MT_T2_POS = [
+    "在哪个位置？用 JSON 把框给我。",
+    "把它框出来，JSON 格式。",
+    "具体位置标一下，bbox_2d。",
+]
+Q_MT_T2_NEG = [
+    "确认一下，把所有{defect}都框出来，JSON 格式。",
+    "再仔细过一遍，有{defect}的地方都标出来（JSON）。",
+]
+Q_MT_T3_POS = [
+    "那这个严重吗？要怎么处理？",
+    "需要现在处理还是可以放到下次定检？",
+    "按手册该怎么做？",
+]
+Q_MT_T3_NEG = [
+    "那这块可以放行了？",
+    "确认没问题的话，我就签工卡了。",
+]
+A_MT_T3_NEG = [
+    "可以放行。该{obj}表面完整，紧固件齐全，未见锈蚀、裂纹或明显损伤，"
+    "本项检查合格。",
+    "本项可以签字。外观检查未见异常，建议按计划在下次定检时复查。",
+]
+
+
+# ---------------------------------------------------------------- 问法池
+
+# 任务 -> 种子问法。大模型扩写出来的问法会并进这个池子（见
+# scripts/gen_question_bank.py 与 load_question_bank）。
+QUESTIONS = {
+    "grounding_single": Q_GROUNDING_SINGLE,
+    "grounding_all": Q_GROUNDING_ALL,
+    "grounding_negative": Q_GROUNDING_NEGATIVE,
+    "referring_region": Q_REGION_YESNO,
+    "region_word": Q_REGION_WORD,
+    "counting": Q_COUNT,
+    "discrimination": Q_DISCRIMINATION,
+    "classification_open": Q_CLASSIFY_OPEN,
+    "description": Q_DESCRIBE,
+    "severity_action": Q_SEVERITY,
+    "object_recognition": Q_OBJECT,
+    "multi_turn": Q_MT_T1,
+}
+
+# 每个任务允许出现的占位符 —— 扩写出来的问法只要用了池外的占位符，
+# 或者漏掉了必需的占位符，就会被拒收（format 时会直接 KeyError）。
+ALLOWED_PLACEHOLDERS = {
+    "grounding_single": {"defect", "defect_en", "obj", "ctx"},
+    "grounding_all": {"obj", "ctx"},
+    "grounding_negative": {"defect", "obj", "ctx"},
+    "referring_region": {"box", "obj", "ctx"},
+    "region_word": {"defect", "obj", "ctx"},
+    "counting": {"defect", "obj", "ctx"},
+    "discrimination": {"obj", "ctx"},
+    "classification_open": {"obj", "ctx"},
+    "description": {"obj", "ctx"},
+    "severity_action": {"obj", "ctx"},
+    "object_recognition": {"obj", "ctx"},
+    "multi_turn": {"obj", "ctx"},
+}
+REQUIRED_PLACEHOLDERS = {
+    "grounding_single": {"defect"},      # 不点名缺陷类型就没法"单目标定位"
+    "referring_region": {"box"},         # 不给框就不成其为"区域指代"
+    "region_word": {"defect"},
+    "counting": {"defect"},
+}
+
+
+def load_question_bank(path: str) -> dict:
+    """读取大模型扩写出的问法库，并入种子池。文件不存在就返回空。"""
+    import json
+    import os
+    if not path or not os.path.exists(path):
+        return {}
+    with open(path, encoding="utf-8") as f:
+        bank = json.load(f)
+    return bank.get("questions", bank)
+
+
+def merged_questions(bank: dict = None) -> dict:
+    """种子问法 + 扩写问法，按任务合并去重。"""
+    out = {k: list(v) for k, v in QUESTIONS.items()}
+    for task, extra in (bank or {}).items():
+        if task not in out:
+            continue
+        seen = set(out[task])
+        for q in extra:
+            if q not in seen:
+                seen.add(q)
+                out[task].append(q)
+    return out

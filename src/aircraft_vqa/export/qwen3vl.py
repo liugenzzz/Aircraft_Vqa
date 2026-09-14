@@ -29,13 +29,23 @@ def _img_path(path: str, image_root: Optional[str], relative: bool) -> str:
     return path
 
 
+def _turn_pairs(r: dict) -> list:
+    """统一取出 (问, 答) 序列：多轮条目走 turns，单轮走 question/answer。"""
+    if r.get("turns"):
+        return [(t["question"], t["answer"]) for t in r["turns"]]
+    return [(r["question"], r["answer"])]
+
+
 def to_llamafactory(r: dict, image_root=None, relative=False,
                     with_system=True) -> dict:
     msgs = []
     if with_system and r.get("system"):
         msgs.append({"role": "system", "content": r["system"]})
-    msgs.append({"role": "user", "content": f"{IMAGE_TOKEN}{r['question']}"})
-    msgs.append({"role": "assistant", "content": r["answer"]})
+    for i, (q, a) in enumerate(_turn_pairs(r)):
+        # 图片只挂在第一轮，后续轮次靠上下文承接
+        msgs.append({"role": "user",
+                     "content": f"{IMAGE_TOKEN}{q}" if i == 0 else q})
+        msgs.append({"role": "assistant", "content": a})
     return {"messages": msgs, "images": [_img_path(r["image"], image_root, relative)]}
 
 
@@ -43,8 +53,10 @@ def to_swift(r: dict, image_root=None, relative=False, with_system=True) -> dict
     msgs = []
     if with_system and r.get("system"):
         msgs.append({"role": "system", "content": r["system"]})
-    msgs.append({"role": "user", "content": f"{IMAGE_TOKEN}{r['question']}"})
-    msgs.append({"role": "assistant", "content": r["answer"]})
+    for i, (q, a) in enumerate(_turn_pairs(r)):
+        msgs.append({"role": "user",
+                     "content": f"{IMAGE_TOKEN}{q}" if i == 0 else q})
+        msgs.append({"role": "assistant", "content": a})
     out = {"messages": msgs, "images": [_img_path(r["image"], image_root, relative)]}
     if r.get("task", "").startswith("grounding") or r.get("task") == "counting":
         out["_meta"] = {"task": r["task"], "coord_mode": r.get("coord_mode")}
@@ -55,12 +67,15 @@ def to_openai(r: dict, image_root=None, relative=False, with_system=True) -> dic
     msgs = []
     if with_system and r.get("system"):
         msgs.append({"role": "system", "content": r["system"]})
-    msgs.append({"role": "user", "content": [
-        {"type": "image", "image": _img_path(r["image"], image_root, relative)},
-        {"type": "text", "text": r["question"]},
-    ]})
-    msgs.append({"role": "assistant", "content": [
-        {"type": "text", "text": r["answer"]}]})
+    for i, (q, a) in enumerate(_turn_pairs(r)):
+        if i == 0:
+            msgs.append({"role": "user", "content": [
+                {"type": "image",
+                 "image": _img_path(r["image"], image_root, relative)},
+                {"type": "text", "text": q}]})
+        else:
+            msgs.append({"role": "user", "content": [{"type": "text", "text": q}]})
+        msgs.append({"role": "assistant", "content": [{"type": "text", "text": a}]})
     return {"messages": msgs}
 
 

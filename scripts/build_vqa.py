@@ -80,7 +80,17 @@ def main() -> int:
         max_qa_per_sample=cfg.get("max_qa_per_sample", 4),
         n_options=cfg.get("n_options", 4),
         skip_unknown_type_tasks=cfg.get("skip_unknown_type_tasks", True),
+        active_defect_types=cfg.get("active_defect_types"),
+        question_bank=cfg.get("question_bank"),
     )
+    if bcfg.active_defect_types:
+        print(f"[scope] 本期缺陷范围 {len(bcfg.active_defect_types)} 类："
+              f"{'、'.join(tax.zh(t) for t in bcfg.active_defect_types)}")
+    n_bank = sum(len(v) for v in
+                 __import__("aircraft_vqa.vqa.templates", fromlist=["x"])
+                 .load_question_bank(bcfg.question_bank or "").values())
+    print(f"[qbank] 扩写问法 {n_bank} 条"
+          + ("" if n_bank else "（未生成，仅用种子问法；见 scripts/gen_question_bank.py）"))
     builder = VQABuilder(bcfg, tax)
     records = list(builder.build_many(samples))
     print(f"[build] 生成 {len(records)} 条原始问答")

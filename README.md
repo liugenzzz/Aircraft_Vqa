@@ -3,10 +3,14 @@
 面向民航维修（MRO）外观检查场景，把公开异常检测数据集批量转换成
 **Qwen3-VL-8B-Instruct 可直接训练的中文指令数据**。
 
-覆盖两类能力：
+覆盖三类能力：
 
-- **缺陷定位**：螺丝/铆钉缺失、锈蚀、裂纹等异常的边界框输出、区域指代、计数
+- **缺陷定位**：边界框输出、区域指代、计数、正常图答空列表（抑制幻觉）
 - **缺陷识别**：有无判定、类型分类、缺陷描述、严重度评估与维修处置建议
+- **多轮追问**：有无 → 定位 → 处置，复刻机务实际问诊流程
+
+本期缺陷范围 **8 类**：紧固件缺失 / 紧固件松动 / **螺纹损伤** / **裂纹(critical)**
+/ 腐蚀锈蚀 / 凹坑 / 划伤 / 漆层剥落。
 
 ## 快速开始
 
@@ -15,7 +19,11 @@ pip install -r requirements.txt
 
 # 1) 拿数据：VisA 免申请直下（CC BY 4.0），合成数据本地生成
 bash scripts/download/download_visa.sh ~/data/raw
-python scripts/make_demo_data.py --out ~/data/raw/synthetic_panel -n 2000
+python scripts/make_demo_data.py --out ~/data/raw/synthetic -n 4000
+
+# 1.5) 可选：用大模型把问法扩写一轮（一次性，十几次调用）
+python scripts/gen_question_bank.py --dry-run          # 先看 prompt
+python scripts/gen_question_bank.py --per-task 25      # 需要 LLM_API_KEY
 
 # 2) 归一化成统一中间表示
 python scripts/ingest.py --data-root ~/data/raw --out data/interim
@@ -76,18 +84,19 @@ data/vqa/
 configs/
   datasets.yaml     数据源清单（含授权与下载方式）
   taxonomy.yaml     缺陷本体：14 类缺陷 + 对象 + 严重度 + 维修处置建议
-  build.yaml        构建配置：坐标模式、任务配比、平衡策略
+  build.yaml        构建配置：缺陷范围(8类)、坐标模式、任务配比、平衡策略
 src/aircraft_vqa/
   schema.py         统一中间表示 UnifiedSample
   taxonomy.py       类别名归一化
   geometry.py       mask→bbox、方位词、Qwen 坐标换算、smart_resize
   adapters/         MVTec / LOCO / VisA / Real-IAD / COCO / YOLO / 掩码分割
-  vqa/              模板库、构建器、干扰项、负样本采样、大模型改写层
+  vqa/              模板库+问法池、构建器、干扰项、负样本采样、大模型改写层
   export/           LLaMA-Factory / ms-swift / OpenAI 三种导出格式
   balance.py        两层平衡、分组切分、配比达成度
   qc.py             13 项自动质检
 scripts/            download/ ingest / build_vqa / visualize / make_demo_data
-tests/              30 个回归测试
+                    gen_question_bank（大模型扩写问法，一次性离线跑）
+tests/              40 个回归测试
 ```
 
 ## 授权提醒
