@@ -1,0 +1,45 @@
+# VQA 构建配置
+seed: 20260914
+
+# Qwen3-VL 原生坐标：[0,1000] 归一化。用 ms-swift 的 grounding 格式时改成 abs。
+coord_mode: norm1000
+box_label: zh            # 框里的 label 用中文 / en / canonical
+
+max_qa_per_sample: 4
+n_options: 4
+skip_unknown_type_tasks: true   # 源数据没有细粒度类型时，不出"这是什么缺陷"的题
+
+# 样本层平衡：每 1 张异常图保留多少张正常图（<=0 不限制）
+normal_per_anomalous: 1.0
+
+# 问答层目标配比（会自动归一化；供给不足时缺口按权重重分配）
+task_ratio:
+  # ---- 缺陷定位 55% ----
+  grounding_single: 0.20
+  grounding_all: 0.15
+  grounding_negative: 0.10     # 正常图答空列表，抑制幻觉的关键，别删
+  referring_region: 0.06
+  counting: 0.02
+  region_word: 0.02
+  # ---- 缺陷识别 45% ----
+  discrimination: 0.10
+  classification_open: 0.08
+  classification_mc: 0.07
+  description: 0.13
+  severity_action: 0.05
+  object_recognition: 0.02
+
+# 单张图最多被采纳的问答数（在 task_ratio 之后再限一次）
+split_ratios: [0.95, 0.03, 0.02]
+
+export:
+  format: llamafactory      # llamafactory | swift | openai
+  with_system: true
+  relative_paths: false
+
+llm:
+  provider: none            # none | openai（OpenAI 兼容接口，含 DashScope）
+  model: qwen-plus
+  base_url: ""              # 例：https://dashscope.aliyuncs.com/compatible-mode/v1
+  api_key_env: LLM_API_KEY
+  temperature: 0.6

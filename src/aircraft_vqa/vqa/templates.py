@@ -1,0 +1,168 @@
+# -*- coding: utf-8 -*-
+"""问题/回答模板库（中文为主，保留少量英文以增强双语鲁棒性）。
+
+设计原则
+1. 同一任务给多套问法，避免模型过拟合到单一句式；
+2. 问法全部采用航线维修口吻（"按 AMM 要求…""请判定是否可放行"），
+   让模型学到的是维修场景语气，而不是通用 VQA 语气；
+3. 定位类答案统一走 JSON，便于训练后直接解析。
+"""
+
+SYSTEM_PROMPT = (
+    "你是一名民航机务维修视觉检查助手，擅长在飞机蒙皮、壁板、紧固件等结构件的检查照片中"
+    "发现并定位螺丝/铆钉缺失、松动、锈蚀、裂纹、凹坑、划伤、漆层剥落等异常。"
+    "回答要准确、简洁、可执行；没有把握的地方要明确说明，不要臆测。"
+)
+
+SYSTEM_PROMPT_GROUNDING = (
+    "你是一名民航机务维修视觉检查助手。请严格按照用户要求的 JSON 格式输出目标框，"
+    "不要输出多余解释。图中若不存在被问及的目标，输出空列表 []。"
+)
+
+# ---------------------------------------------------------------- 定位
+
+Q_GROUNDING_SINGLE = [
+    "请在图中定位所有{defect}的位置，用 JSON 输出边界框。",
+    "这张{obj}检查照片里存在{defect}，把它框出来，以 JSON 格式给出 bbox_2d。",
+    "按 JSON 格式标出图中{defect}所在的区域。",
+    "Locate every {defect_en} in this image and return the bounding boxes in JSON.",
+    "作为机务检查，请框出该{obj}上{defect}的具体位置（JSON）。",
+]
+
+Q_GROUNDING_ALL = [
+    "请检查这张{obj}照片，列出全部异常区域及其类型，用 JSON 输出。",
+    "对该{ctx}做一次外观检查，把所有发现的缺陷连同类型一起框出来（JSON 格式）。",
+    "逐一定位图中的所有异常并标注类型，按 JSON 返回。",
+    "Detect all defects in this image and output bbox_2d with labels in JSON.",
+]
+
+Q_GROUNDING_NEGATIVE = [
+    "请检查这张{obj}照片，列出全部异常区域及其类型，用 JSON 输出。",
+    "把图中所有存在{defect}的位置框出来（JSON），若没有请返回空列表。",
+    "对该{ctx}做外观检查，用 JSON 标出所有缺陷区域。",
+]
+
+A_GROUNDING_EMPTY = [
+    "[]\n本图未发现异常，无需标注。",
+    "[]\n该{obj}外观检查未见{defect}或其他可见缺陷。",
+    "[]",
+]
+
+Q_REGION_YESNO = [
+    "图中坐标 {box} 框出的区域，是否存在异常？",
+    "请判断 {box} 这个范围内的{obj}有没有缺陷。",
+    "重点看一下 {box} 区域，这里是否需要开工卡处理？",
+]
+
+A_REGION_POSITIVE = [
+    "是。{box} 区域内存在{defect}，位于画面{region}，缺陷范围{size}。",
+    "该区域存在异常：{defect}（{region}，{size}），建议按{severity}等级处理。",
+]
+
+A_REGION_NEGATIVE = [
+    "否。{box} 区域内未见异常，该处{obj}表面完好。",
+    "该区域未发现缺陷，外观正常。",
+]
+
+Q_REGION_WORD = [
+    "图中的{defect}大致位于画面的哪个方位？",
+    "描述一下{defect}在这张照片中的位置。",
+]
+
+A_REGION_WORD = [
+    "{defect}位于画面{region}，缺陷范围{size}。",
+    "在画面{region}可以看到{defect}，占比{size}。",
+]
+
+Q_COUNT = [
+    "图中一共有几处{defect}？请先给出数量，再用 JSON 列出每一处的位置。",
+    "清点这张照片里{defect}的数量，并逐个框出来。",
+]
+
+A_COUNT = "共发现 {n} 处{defect}。\n{json}"
+
+# ---------------------------------------------------------------- 识别
+
+Q_DISCRIMINATION = [
+    "这张{obj}检查照片中是否存在异常？",
+    "按航线检查标准，该{ctx}外观是否合格？",
+    "看一下这个{obj}，有没有需要报缺陷的地方？",
+]
+
+A_DISCRIMINATION_POS = [
+    "存在异常。可见{defect_list}，位于画面{region}。",
+    "不合格。该{obj}上发现{defect_list}，需要记录并进一步评估。",
+    "是，存在缺陷：{defect_list}（{region}）。",
+]
+
+A_DISCRIMINATION_NEG = [
+    "未发现异常。该{obj}表面完好，紧固件齐全，无锈蚀、裂纹或明显损伤。",
+    "合格。外观检查未见缺陷。",
+    "否，本图未见异常。",
+]
+
+Q_CLASSIFY_OPEN = [
+    "图中的缺陷属于哪一类？",
+    "请判断该{obj}上出现的是什么类型的异常。",
+    "这处损伤应该按哪种缺陷类型填写工卡？",
+]
+
+A_CLASSIFY_OPEN = [
+    "属于{defect}（{defect_en}）。{evidence}",
+    "该异常是{defect}。{evidence}",
+]
+
+Q_CLASSIFY_MC = "图中该{obj}存在的缺陷类型是以下哪一种？\n{options}"
+
+Q_DESCRIBE = [
+    "请描述这张{obj}检查照片中的缺陷情况。",
+    "写一段简短的检查记录，说明该{ctx}的外观状况。",
+    "详细说明图中异常的类型、位置和范围。",
+]
+
+A_DESCRIBE_POS = (
+    "被检部件为{obj}（{ctx}）。检查发现{n}处异常：{items}。"
+    "综合判定严重程度为{severity}（{severity_desc}）。"
+)
+
+A_DESCRIBE_NEG = (
+    "被检部件为{obj}（{ctx}）。外观检查未见{negative_aspects}，状态正常，可放行。"
+)
+
+Q_SEVERITY = [
+    "这处缺陷的严重程度如何？应该怎么处理？",
+    "请评估该异常对结构完整性的影响并给出处置建议。",
+    "按维修手册，这个缺陷需要怎么处理？",
+]
+
+A_SEVERITY = (
+    "严重程度：{severity}。{severity_desc}\n"
+    "缺陷类型：{defect}，位于画面{region}，范围{size}。\n"
+    "处置建议：{action}"
+)
+
+Q_OBJECT = [
+    "图中被检查的是什么部件？",
+    "请识别这张照片里的对象。",
+    "这是飞机上的什么结构？在检查中要重点关注什么？",
+]
+
+A_OBJECT = [
+    "图中是{obj}，在飞机上对应{ctx}。检查时重点关注{focus}。",
+    "被检对象为{obj}（{ctx}）。",
+]
+
+OBJECT_FOCUS = {
+    "fastener": "紧固件是否齐全、有无松动退出、头部是否变形或锈蚀",
+    "fastener_kit": "各规格紧固件数量是否与清单一致、有无混装错装",
+    "structure": "蒙皮有无裂纹、凹坑、腐蚀及漆层剥落，铆接排是否完好",
+    "avionics": "元器件有无缺件、虚焊、烧蚀及接插件是否到位",
+    "unknown": "表面完整性与连接可靠性",
+}
+
+NEGATIVE_ASPECTS = [
+    "紧固件缺失或松动",
+    "锈蚀与腐蚀痕迹",
+    "裂纹、凹坑等结构损伤",
+    "漆层剥落或划伤",
+]

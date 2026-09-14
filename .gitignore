@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 数据产物不入库
+data/
+!data/.gitkeep
+*.tar
+*.zip
+*.jsonl
+!tests/fixtures/*.jsonl

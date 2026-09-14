@@ -1,0 +1,163 @@
+# 数据源清单。每个条目 = 一个 adapter 实例。
+# root 指向你本地解压后的目录；enabled: false 的先不参与构建。
+# 详细调研见 docs/01_dataset_survey.md。
+
+defaults:
+  data_root: ~/data/raw        # 各条目 root 里的 {data_root} 会被替换
+
+datasets:
+
+  # ---------------- 冷启动：免申请、可商用、能直接 wget ----------------
+  - name: visa
+    adapter: visa
+    root: "{data_root}/VisA"
+    enabled: true
+    priority: 1
+    license: "CC BY 4.0"
+    commercial_ok: true
+    url: https://registry.opendata.aws/visa/
+    download: scripts/download/download_visa.sh
+    split_csv: 1cls.csv
+    # 只取 PCB 四类：candle/capsules/cashew/macaroni 这些食品与日用品类目
+    # 对航空结构件没有迁移价值，混进来只会稀释训练信号。
+    categories: [pcb1, pcb2, pcb3, pcb4]
+    # VisA 发布版只有 Anomaly/Normal 两级标签，没有细粒度缺陷名。
+    # 这里刻意不臆造类型：统一落到 other_anomaly，构建器会自动跳过
+    # "缺陷类型"这类问题，只用它做定位 + 有无判定。
+    object_hint:
+      pcb1: pcb
+      pcb2: pcb
+      pcb3: pcb
+      pcb4: pcb
+    notes: "定位能力主力来源之一；PCB 类的缺件语义与'少一颗螺丝'同构。"
+
+  # ---------------- 紧固件细粒度语义（研究用，非商用） ----------------
+  - name: mvtec_ad_screw
+    adapter: mvtec_ad
+    root: "{data_root}/mvtec_anomaly_detection"
+    enabled: false
+    priority: 1
+    license: "CC BY-NC-SA 4.0"
+    commercial_ok: false
+    url: https://www.mvtec.com/company/research/datasets/mvtec-ad
+    download: scripts/download/download_mvtec_ad.sh
+    categories: [screw, metal_nut]
+    object_hint:
+      screw: screw
+      metal_nut: nut
+    notes: "螺纹损伤/头部划伤 + 像素级 mask，缺陷定位的金标准。"
+
+  - name: mvtec_loco_screwbag
+    adapter: mvtec_loco
+    root: "{data_root}/mvtec_loco_anomaly_detection"
+    enabled: false
+    priority: 1
+    license: "CC BY-NC-SA 4.0"
+    commercial_ok: false
+    url: https://www.mvtec.com/company/research/datasets/mvtec-loco
+    download: scripts/download/download_mvtec_loco.sh
+    categories: [screw_bag]
+    object_hint:
+      screw_bag: screw_bag
+    notes: "缺件/数量错/规格错 —— 最贴近'螺丝缺失'语义。可放 defect_names.json 细化类型。"
+
+  - name: mpdd
+    adapter: mpdd
+    root: "{data_root}/MPDD"
+    enabled: false
+    priority: 2
+    license: "CC BY-NC-SA 4.0"
+    commercial_ok: false
+    url: https://github.com/stepanje/MPDD
+    object_hint:
+      metal_plate: metal_part
+      bracket_black: metal_part
+      bracket_brown: metal_part
+      bracket_white: metal_part
+      connector: metal_part
+      tubes: metal_part
+    notes: "金属喷漆件，多光照多角度，提升金属反光鲁棒性。"
+
+  - name: real_iad
+    adapter: real_iad
+    root: "{data_root}/Real-IAD"
+    enabled: false
+    priority: 2
+    license: "需签署协议"
+    commercial_ok: false
+    url: https://arxiv.org/abs/2403.12580
+    notes: "150K 图 / 30 类 / 每件 5 视角，训练'换个角度再确认'的多视角聚焦能力。"
+
+  # ---------------- 航空域（决定最终域表现，建议过采样） ----------------
+  - name: aircraft_skin_defects
+    adapter: coco
+    root: "{data_root}/roboflow/aircraft_skin_defects"
+    enabled: false
+    priority: 1
+    license: "见 Roboflow 项目页（多为 CC BY 4.0）"
+    commercial_ok: false
+    url: https://universe.roboflow.com/ddiisc/aircraft_skin_defects
+    download: scripts/download/download_roboflow.py
+    category: fuselage
+    object_hint:
+      fuselage: fuselage
+    splits: [train, valid, test]
+    notes: "类别含 Missing-head（紧固件缺失），是唯一直接命中'螺丝缺失'的航空标注。"
+
+  - name: uts_aircraft_defect
+    adapter: coco
+    root: "{data_root}/roboflow/aircraft-defect-detection"
+    enabled: false
+    priority: 1
+    license: "见 Roboflow 项目页"
+    commercial_ok: false
+    url: https://universe.roboflow.com/university-of-technology-sydney-21uto/aircraft-defect-detection
+    category: fuselage
+    object_hint:
+      fuselage: fuselage
+    notes: "9352 张，目前能拿到的最大航空缺陷检测集。"
+
+  # ---------------- 锈蚀分级 ----------------
+  - name: corrosion_cs_vt
+    adapter: mask_seg
+    root: "{data_root}/corrosion_cs"
+    enabled: false
+    priority: 2
+    license: "学术开放，商用需确认"
+    commercial_ok: false
+    url: https://data.lib.vt.edu/articles/dataset/Corrosion_Condition_State_Semantic_Segmentation_Dataset/16624663
+    category: metal_part
+    images_dir: images
+    masks_dir: masks
+    class_map: {1: fair, 2: poor, 3: severe}
+    background_values: [0]
+    notes: "4 级腐蚀像素分割，支撑'锈蚀到什么程度/怎么处理'的问答。"
+
+  # ---------------- 螺栓 ----------------
+  - name: npu_bolt
+    adapter: coco
+    root: "{data_root}/NPU-BOLT"
+    enabled: false
+    priority: 3
+    license: "学术开放"
+    commercial_ok: false
+    url: https://arxiv.org/pdf/2205.11191
+    category: bolt
+    object_hint:
+      bolt: bolt
+    notes: "自然场景螺栓检测，补 MVTec 白底摆拍的短板。"
+
+  # ---------------- 合成数据（本仓库生成，完全可商用） ----------------
+  - name: synthetic_panel
+    adapter: coco
+    root: "{data_root}/synthetic_panel"
+    enabled: true
+    priority: 1
+    license: "自有合成数据"
+    commercial_ok: true
+    download: scripts/make_demo_data.py
+    category: panel
+    object_hint:
+      panel: panel
+    splits: [train, valid, test]
+    notes: "程序化生成的蒙皮铆钉阵列，可控注入缺失/锈蚀/划伤，带精确 bbox。"
