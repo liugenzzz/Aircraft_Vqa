@@ -484,3 +484,57 @@ def test_cap_class_imbalance_noop_when_already_balanced():
     recs = [{"task": "classification_mc", "target_type": t, "qa_id": f"{t}{i}"}
             for t in ("crack", "dent") for i in range(20)]
     assert len(cap_class_imbalance(recs, ["classification_mc"], 3.0)) == len(recs)
+
+
+# ------------------------------------------------------------------ 配置自动启用
+def test_enable_in_config_only_flips_matching_entry(tmp_path):
+    da = _load_script(os.path.join("download", "download_all.py"))
+    cfg = tmp_path / "datasets.yaml"
+    cfg.write_text(
+        "datasets:\n"
+        "  - name: visa\n"
+        "    adapter: visa\n"
+        "    enabled: false   # 注释要保住\n"
+        "  - name: mvtec_ad_screw\n"
+        "    adapter: mvtec_ad\n"
+        "    enabled: false\n", encoding="utf-8")
+    changed = da.enable_in_config(str(cfg), ["visa"])
+    text = cfg.read_text(encoding="utf-8")
+    assert changed == ["visa"]
+    assert "  - name: visa\n    adapter: visa\n    enabled: true\n" in text
+    # 没点名的条目原样不动
+    assert "  - name: mvtec_ad_screw\n    adapter: mvtec_ad\n    enabled: false\n" in text
+
+
+def test_enable_in_config_is_idempotent(tmp_path):
+    da = _load_script(os.path.join("download", "download_all.py"))
+    cfg = tmp_path / "d.yaml"
+    cfg.write_text("  - name: visa\n    enabled: true\n", encoding="utf-8")
+    assert da.enable_in_config(str(cfg), ["visa"]) == []      # 已是 true，不重复改
+    assert cfg.read_text(encoding="utf-8") == "  - name: visa\n    enabled: true\n"
+
+
+def test_roboflow_downloader_parses_versions():
+    rf = _load_script(os.path.join("download", "download_roboflow.py"))
+    import json as _json
+    meta = {"versions": [
+        {"id": "ws/proj/1", "name": "v1", "images": 300},
+        {"id": "ws/proj/3", "name": "v3", "images": 1115},
+        {"id": "ws/proj/2", "name": "v2", "images": 700},
+        {"id": "ws/proj/draft", "name": "草稿"},          # 非数字版本要被跳过
+    ]}
+    rf._get_json = lambda url, timeout=60: meta
+    vers = rf.list_versions("ws", "proj", "k")
+    assert [v["version"] for v in vers] == [1, 2, 3]        # 升序，latest 取末尾
+    assert vers[-1]["images"] == 1115
+    _json.dumps(vers)                                       # 可序列化
+
+
+def test_roboflow_error_messages_are_actionable():
+    rf = _load_script(os.path.join("download", "download_roboflow.py"))
+    import urllib.error
+    import io
+    e401 = urllib.error.HTTPError("u", 401, "x", {}, io.BytesIO(b""))
+    e404 = urllib.error.HTTPError("u", 404, "x", {}, io.BytesIO(b""))
+    assert "Private API Key" in rf._explain(e401, "ws", "proj")
+    assert "--list-versions" in rf._explain(e404, "ws", "proj")

@@ -45,6 +45,7 @@ SOURCES = [
         "page": "https://registry.opendata.aws/visa/",
         "archive": "VisA.tar",
         "config_key": "visa",
+        "config_names": ["visa"],
     },
     {
         "name": "synthetic",
@@ -58,6 +59,7 @@ SOURCES = [
         "cmd": [sys.executable, os.path.join(REPO, "scripts", "make_demo_data.py"),
                 "--out", "{dest}", "-n", "{n_synth}"],
         "config_key": "synthetic_panel / synthetic_closeup",
+        "config_names": ["synthetic_panel", "synthetic_closeup"],
     },
     {
         "name": "aircraft_skin_defects",
@@ -71,8 +73,10 @@ SOURCES = [
         "env": "ROBOFLOW_API_KEY",
         "env_how": "https://app.roboflow.com → Settings → Roboflow API → Private API Key",
         "page": "https://universe.roboflow.com/ddiisc/aircraft_skin_defects",
-        "rf": {"workspace": "ddiisc", "project": "aircraft_skin_defects", "version": "1"},
+        "rf": {"workspace": "ddiisc", "project": "aircraft_skin_defects",
+               "version": "latest"},
         "config_key": "aircraft_skin_defects",
+        "config_names": ["aircraft_skin_defects"],
     },
     {
         "name": "uts_aircraft_defect",
@@ -87,8 +91,9 @@ SOURCES = [
         "env_how": "同上",
         "page": "https://universe.roboflow.com/university-of-technology-sydney-21uto/aircraft-defect-detection",
         "rf": {"workspace": "university-of-technology-sydney-21uto",
-               "project": "aircraft-defect-detection", "version": "1"},
+               "project": "aircraft-defect-detection", "version": "latest"},
         "config_key": "uts_aircraft_defect",
+        "config_names": ["uts_aircraft_defect"],
     },
     {
         "name": "npu_bolt",
@@ -105,6 +110,7 @@ SOURCES = [
         "kaggle": "xiaoqian0/npu-bolt-dataset",
         "page": "https://arxiv.org/pdf/2205.11191",
         "config_key": "npu_bolt",
+        "config_names": [],
         "note": "Kaggle 上的数据集 slug 可能随作者调整，下不到就按 page 里的论文找最新链接。",
     },
     {
@@ -124,6 +130,7 @@ SOURCES = [
             "确认 {full_dest}/screw/train/good 下有图",
         ],
         "config_key": "mvtec_ad_screw",
+        "config_names": ["mvtec_ad_screw"],
     },
     {
         "name": "mvtec_loco",
@@ -143,6 +150,7 @@ SOURCES = [
             "（{{\"图片stem\": \"screw_too_long\"}}），能拿到细粒度缺陷类型",
         ],
         "config_key": "mvtec_loco_screwbag",
+        "config_names": ["mvtec_loco_screwbag"],
     },
     {
         "name": "corrosion_cs_vt",
@@ -162,6 +170,7 @@ SOURCES = [
             "{{1: fair, 2: poor, 3: severe}} 配好，若实际取值不同照着改",
         ],
         "config_key": "corrosion_cs_vt",
+        "config_names": ["corrosion_cs_vt"],
     },
     {
         "name": "real_iad",
@@ -180,6 +189,7 @@ SOURCES = [
             "体量很大，建议只取金属紧固/机加类的若干 category",
         ],
         "config_key": "real_iad",
+        "config_names": ["real_iad"],
     },
     {
         "name": "aircraft_fuselage_det2023",
@@ -377,6 +387,33 @@ def write_manual_manifest(root: str, srcs: list, out_path: str) -> None:
         f.write("\n".join(lines))
 
 
+def enable_in_config(config_path: str, names: list) -> list:
+    """把 datasets.yaml 里这些条目的 enabled 改成 true。
+
+    只动匹配到的 `- name:` 块里的那一行 enabled，其他内容一字不改
+    （所以不走 yaml.dump，避免把注释和格式全洗掉）。
+    """
+    if not names or not os.path.exists(config_path):
+        return []
+    with open(config_path, encoding="utf-8") as f:
+        lines = f.readlines()
+
+    changed, cur = [], None
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("- name:"):
+            cur = stripped.split(":", 1)[1].strip()
+        elif stripped.startswith("enabled:") and cur in names:
+            if "false" in stripped:
+                indent = line[:len(line) - len(line.lstrip())]
+                lines[i] = f"{indent}enabled: true\n"
+                changed.append(cur)
+    if changed:
+        with open(config_path, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+    return changed
+
+
 def print_table(root: str, srcs: list) -> None:
     print("\n" + _pad("数据集", 40) + _pad("获取方式", 12)
           + _pad("状态", 8) + _pad("体量", 18) + "用途")
@@ -397,6 +434,10 @@ def main() -> int:
     ap.add_argument("--check", action="store_true", help="只体检已有数据")
     ap.add_argument("--n-synth", type=int, default=4000, help="合成数据张数")
     ap.add_argument("--keep-archive", action="store_true", help="解压后保留压缩包")
+    ap.add_argument("--enable-config", action="store_true",
+                    help="下好之后自动把 configs/datasets.yaml 里对应条目的 "
+                         "enabled 改成 true")
+    ap.add_argument("--config", default=os.path.join(REPO, "configs", "datasets.yaml"))
     ap.add_argument("--manifest", default=None,
                     help="手动清单输出路径（默认 <data_root>/MANUAL_DOWNLOADS.md）")
     args = ap.parse_args()
@@ -408,6 +449,12 @@ def main() -> int:
 
     if args.list or args.check:
         print_table(root, srcs)
+        if args.check and args.enable_config:
+            ready = [n for s_ in srcs if _present(root, s_)
+                     for n in s_.get("config_names", [])]
+            done_cfg = enable_in_config(args.config, ready)
+            if done_cfg:
+                print(f"\n已在 {args.config} 里启用：{'、'.join(done_cfg)}")
         manual = [s for s in srcs if s["mode"] == "manual" and not _present(root, s)]
         if manual:
             write_manual_manifest(root, manual, manifest)
@@ -446,6 +493,13 @@ def main() -> int:
 
     if manual:
         write_manual_manifest(root, manual, manifest)
+
+    if args.enable_config:
+        ready = [n for s_ in srcs if _present(root, s_)
+                 for n in s_.get("config_names", [])]
+        done_cfg = enable_in_config(args.config, ready)
+        if done_cfg:
+            print(f"\n已在 {args.config} 里启用：{'、'.join(done_cfg)}")
 
     print("\n" + "=" * 60)
     print(f"已就绪 {len(done)}：{'、'.join(done) or '无'}")

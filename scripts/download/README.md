@@ -14,6 +14,16 @@ export ROBOFLOW_API_KEY=xxx        # https://app.roboflow.com → Settings → R
 pip install kaggle
 ```
 
+> **Key 不要写进任何文件、也不要提交进仓库**，只用环境变量。
+> 想长期生效就写进 `~/.bashrc` 或 `~/.zshrc`。
+
+加 `--enable-config`，下好之后会自动把 `configs/datasets.yaml` 里对应条目的
+`enabled` 改成 `true`，省得手改（只动那一行，注释和格式都保留）：
+
+```bash
+python scripts/download/download_all.py --data-root ~/data/raw --enable-config
+```
+
 其他用法：
 
 ```bash
@@ -44,6 +54,20 @@ python scripts/download/download_all.py --data-root ~/data/raw --check
 
 都显示"已有"之后，把 `configs/datasets.yaml` 里对应条目的 `enabled` 改成 `true`。
 
+### Roboflow 下不动时怎么办
+
+脚本会把 HTTP 错误翻译成具体原因：
+
+| 现象 | 原因与处理 |
+|---|---|
+| 401 / 403 | 用错了 key。要的是 **Private API Key**，不是 Publishable Key；且该账号要能打开对应项目页 |
+| 404 | workspace / project 拼错了，或版本号不存在。这两段就是项目页 URL 里 `universe.roboflow.com/` 后面那两截；用 `--list-versions` 看有哪些版本 |
+| 返回里没有下载链接 | Roboflow 还在后台打包，等 1~2 分钟重跑同一条命令 |
+| 429 | 限流，等几分钟 |
+
+实在不行就走浏览器：打开项目页 → **Download Dataset** → 选 **COCO** →
+下到本地解压到脚本提示的那个目录，效果一样。
+
 优先级上，这三个最值得花时间弄：
 
 1. **Roboflow `ddiisc/aircraft_skin_defects`** —— 含 `Missing-head`，唯一直接
@@ -57,7 +81,7 @@ python scripts/download/download_all.py --data-root ~/data/raw --check
 |---|---|
 | `download_all.py` | 一站式，推荐用这个 |
 | `download_visa.sh` | 只下 VisA |
-| `download_roboflow.py` | 下任意一个 Roboflow Universe 项目 |
+| `download_roboflow.py` | 下任意一个 Roboflow Universe 项目；版本默认 `latest` 自动取最新，`--list-versions` 可先看有哪些版本 |
 | `download_mvtec_ad.sh` / `download_mvtec_loco.sh` | 打印 MVTec 的人工获取步骤 |
 
 ## 下完之后
