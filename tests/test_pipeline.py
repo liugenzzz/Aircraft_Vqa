@@ -621,3 +621,56 @@ def test_ungraded_defect_produces_no_grade_task(tmp_path):
     b = VQABuilder(cfg, TAX)
     tasks = {r["task"] for r in b.build(_sample(tmp_path, "anomalous", "crack"))}
     assert "grade_assessment" not in tasks
+
+
+# ------------------------------------------------------------------ Real-IAD
+def _realiad_root(tmp_path, payload, image_rel="switch/0001.jpg"):
+    import json as _json
+    (tmp_path / "realiad_jsons").mkdir()
+    img_dir = tmp_path / "realiad_512" / os.path.dirname(image_rel)
+    img_dir.mkdir(parents=True)
+    Image.new("RGB", (64, 64), (100, 100, 100)).save(
+        tmp_path / "realiad_512" / image_rel)
+    (tmp_path / "realiad_jsons" / "switch.json").write_text(
+        _json.dumps(payload), encoding="utf-8")
+    from aircraft_vqa.adapters import build_adapter
+    return build_adapter(
+        {"adapter": "real_iad", "root": str(tmp_path), "name": "real_iad",
+         "license": "x", "commercial_ok": False,
+         "json_dir": "realiad_jsons", "image_dir": "realiad_512"}, taxonomy=TAX)
+
+
+def test_realiad_reads_standard_train_test_keys(tmp_path):
+    ad = _realiad_root(tmp_path, {
+        "train": [{"image_path": "switch/0001.jpg", "anomaly_class": "OK",
+                   "view": "C1"}],
+        "test": [{"image_path": "switch/0001.jpg", "anomaly_class": "scratch",
+                  "view": "C2"}]})
+    got = list(ad.iter_samples())
+    assert len(got) == 2
+    assert {s.label for s in got} == {"normal", "anomalous"}
+    assert {s.meta.get("view") for s in got} == {"C1", "C2"}
+
+
+def test_realiad_falls_back_to_other_top_level_keys(tmp_path):
+    """顶层键不叫 train/test 时，退回找"值是一串 dict"的键。"""
+    ad = _realiad_root(tmp_path, {
+        "meta": {"version": 1},
+        "samples": [{"image": "switch/0001.jpg", "anomaly_class": "OK"}]})
+    assert len(list(ad.iter_samples())) == 1
+
+
+def test_realiad_accepts_bare_list(tmp_path):
+    ad = _realiad_root(tmp_path, [{"image": "switch/0001.jpg",
+                                   "anomaly_class": "OK"}])
+    assert len(list(ad.iter_samples())) == 1
+
+
+def test_realiad_diagnoses_when_nothing_matches(tmp_path, capsys):
+    ad = _realiad_root(tmp_path, {
+        "samples": [{"pic": "不认识的字段名/x.jpg", "anomaly_class": "OK"}]})
+    assert list(ad.iter_samples()) == []
+    out = capsys.readouterr().out
+    assert "读出 0 条样本" in out
+    assert "条目字段" in out            # 把实际字段名亮出来
+    assert "image_dir" in out           # 并指出该改哪里

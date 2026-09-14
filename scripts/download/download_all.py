@@ -100,15 +100,17 @@ SOURCES = [
         "mode": "manual",
         "zh": "MVTec AD（screw / metal_nut 子集）",
         "use": "★ 螺纹损伤、头部划伤 + 像素级 mask，缺陷定位的金标准",
-        "dest": "mvtec_anomaly_detection",
+        "dest": "MVTec_AD",
         "probe": "screw/train/good",
-        "size": "4.9 GB（全集）",
+        "size": "按类别分包各几百 MB；全集 4.9 GB",
         "license": "CC BY-NC-SA 4.0 —— 禁止商用，只能用于研究",
         "page": "https://www.mvtec.com/company/research/datasets/mvtec-ad/downloads",
         "steps": [
             "打开上面的下载页，填表并同意 CC BY-NC-SA 4.0 条款",
-            "下载 mvtec_anomaly_detection.tar.xz",
-            "mkdir -p {full_dest} && tar -xf mvtec_anomaly_detection.tar.xz -C {full_dest}",
+            "**只下 screw 和 metal_nut 两个类别包**（screw.tar.xz / metal_nut.tar.xz），"
+            "不用下 4.9GB 的全集",
+            "mkdir -p {full_dest} && tar -xf screw.tar.xz -C {full_dest} "
+            "&& tar -xf metal_nut.tar.xz -C {full_dest}",
             "确认 {full_dest}/screw/train/good 下有图",
         ],
         "config_key": "mvtec_ad_screw",
@@ -119,9 +121,9 @@ SOURCES = [
         "mode": "manual",
         "zh": "MVTec LOCO AD（screw_bag 子集）",
         "use": "★ 缺件 / 数量错 / 规格错 —— 最贴近'螺丝缺失'语义的公开标注",
-        "dest": "mvtec_loco_anomaly_detection",
+        "dest": "MVTec_LOCO_AD",
         "probe": "screw_bag/train/good",
-        "size": "6.5 GB（全集）",
+        "size": "screw_bag 单包约 1 GB；全集 6.5 GB",
         "license": "CC BY-NC-SA 4.0 —— 禁止商用",
         "page": "https://www.mvtec.com/company/research/datasets/mvtec-loco/downloads",
         "steps": [
@@ -178,13 +180,18 @@ SOURCES = [
         "steps": [
             "注册 HuggingFace 账号，到组织页 Real-IAD 申请访问："
             "填姓名/单位/用途并同意 CC BY-NC-SA 4.0；部分仓库人工审核，可能等一两天",
-            "**按分辨率和物体分包，不要下 realiad_raw**："
-            "先拿 realiad_512（或 256）里三五个金属/紧固类物体的 ZIP，几 GB 就能起步",
-            "元数据包 realiad_jsons 必须一起下（另有 _sv 单视角、_fuiad 含噪设定两套变体，"
-            "先用基础版）",
-            "解压成 {full_dest}/realiad_jsons/*.json 与 {full_dest}/realiad_512/<类名>/",
-            "在 configs/datasets.yaml 的 real_iad 条目里把 image_dir 改成 realiad_512，"
-            "并用 categories 限定你实际下了的那几个类",
+            "**按分辨率和物体分包，不要下 realiad_raw**。用 hf CLI 只取需要的包：\n"
+            "     hf download Real-IAD/Real-IAD --repo-type dataset \\\n"
+            "       --include 'realiad_512/terminalblock.zip' 'realiad_512/pcb.zip' \\\n"
+            "                 'realiad_512/u_block.zip' 'realiad_512/switch.zip' \\\n"
+            "                 'realiad_jsons.zip' \\\n"
+            "       --local-dir {full_dest}",
+            "解压：realiad_jsons.zip 解到 {full_dest}/realiad_jsons/，"
+            "每个物体的 zip 解到 {full_dest}/realiad_512/<类名>/",
+            "在 configs/datasets.yaml 的 real_iad 条目里用 categories "
+            "列出你实际下了的那几个类（不列会去找不存在的目录）",
+            "跑 ingest 时若该源读出 0 条，adapter 会把 json 的实际结构打出来，"
+            "照着提示改 image_dir 或字段名即可",
         ],
         "note": "训练集 36,465 张纯正常图，测试集 114,585 张混合。"
                 "同一物体不同视角标签不同，这正是'单视角结论不可靠'的天然监督。"

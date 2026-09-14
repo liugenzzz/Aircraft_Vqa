@@ -22,9 +22,17 @@ from aircraft_vqa.taxonomy import get_taxonomy
 
 
 def resolve(spec: dict, data_root: str) -> dict:
+    """展开 {data_root}；主 root 不存在时依次尝试 root_alternatives。
+
+    同一个数据集不同人解压出来的目录名经常不一样（按类别分包下载尤其如此），
+    与其让所有人去改配置，不如在这里挨个试。
+    """
     spec = dict(spec)
-    spec["root"] = os.path.expanduser(
-        str(spec["root"]).replace("{data_root}", data_root))
+    expand = lambda p: os.path.expanduser(str(p).replace("{data_root}", data_root))
+    candidates = [spec["root"]] + list(spec.pop("root_alternatives", []) or [])
+    resolved = [expand(c) for c in candidates]
+    spec["root"] = next((r for r in resolved if os.path.exists(r)), resolved[0])
+    spec["_tried_roots"] = resolved
     return spec
 
 
@@ -57,9 +65,10 @@ def main() -> int:
             print(f"[skip] {name}: 非商用授权")
             continue
         spec = resolve(spec, data_root)
+        tried = spec.pop("_tried_roots", [spec["root"]])
         if not os.path.exists(spec["root"]):
-            print(f"[miss] {name}: 目录不存在 {spec['root']}"
-                  f"  -> 先跑 {spec.get('download', '见 docs/01_dataset_survey.md')}")
+            print(f"[miss] {name}: 目录不存在。试过：{tried}")
+            print(f"        -> 先跑 {spec.get('download', '见 docs/01_dataset_survey.md')}")
             continue
         try:
             ad = build_adapter(spec, taxonomy=tax)

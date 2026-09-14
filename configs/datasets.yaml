@@ -34,7 +34,9 @@ datasets:
   # ---------------- 紧固件细粒度语义（研究用，非商用） ----------------
   - name: mvtec_ad_screw
     adapter: mvtec_ad
-    root: "{data_root}/mvtec_anomaly_detection"
+    root: "{data_root}/MVTec_AD"
+    # 目录名不一致时的候选（按类别分包下载的人目录名往往不一样）
+    root_alternatives: ["{data_root}/mvtec_anomaly_detection", "{data_root}/mvtec_ad"]
     enabled: false
     priority: 1
     license: "CC BY-NC-SA 4.0"
@@ -49,7 +51,9 @@ datasets:
 
   - name: mvtec_loco_screwbag
     adapter: mvtec_loco
-    root: "{data_root}/mvtec_loco_anomaly_detection"
+    root: "{data_root}/MVTec_LOCO_AD"
+    root_alternatives: ["{data_root}/mvtec_loco_anomaly_detection",
+                        "{data_root}/mvtec_loco"]
     enabled: false
     priority: 1
     license: "CC BY-NC-SA 4.0"
@@ -90,8 +94,8 @@ datasets:
     # 取 512 加三五个金属/紧固类物体，几 GB 就够起步。
     image_dir: realiad_512
     json_dir: realiad_jsons
-    # 只用你实际下了的那几个类，置空则全用
-    # categories: [audiojack, bolt, screw, toy_brick]
+    # 只列你实际下了的类，注释掉则全用（会去找不存在的目录，白报一堆 miss）
+    categories: [terminalblock, pcb, u_block, switch]
     notes: "每个视角单独标注 —— 同一个有缺陷的物体，从看不见缺陷的角度拍的那张，
       标签就是 good。'单视角结论不可靠、要换角度确认'这件事的监督信号是现成的，
       不用自己造，正对'局部结构视觉聚焦'这项要求。"

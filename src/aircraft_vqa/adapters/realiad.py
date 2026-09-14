@@ -30,10 +30,37 @@ def _pick(d: dict, keys) -> str:
 class RealIADAdapter(BaseAdapter):
     name = "real_iad"
 
+    def _diagnose(self, cat: str, data, splits: dict, img_root: str) -> None:
+        """一条样本都没读出来时，把 json 实际长什么样打出来。
+
+        Real-IAD 的元数据在不同发布版本里字段名有出入，与其让人对着 0 条
+        结果猜，不如直接把顶层键、split 键、条目字段名和拼出来的第一个路径
+        亮出来 —— 照着改 _IMG_KEYS 或 image_dir 就行。
+        """
+        top = list(data)[:8] if isinstance(data, dict) else f"list[{len(data)}]"
+        print(f"[real_iad] {cat}: 读出 0 条样本，json 结构如下 ——")
+        print(f"           顶层键: {top}")
+        print(f"           识别到的 split: {list(splits)}")
+        for split, items in list(splits.items())[:1]:
+            if items:
+                item = items[0]
+                print(f"           条目字段: {list(item)[:12]}")
+                rel = _pick(item, _IMG_KEYS)
+                print(f"           取到的图片相对路径: {rel!r}")
+                if rel:
+                    print(f"           拼出的绝对路径: {os.path.join(img_root, rel)}")
+        print(f"           图片根目录: {img_root}"
+              f"（存在: {os.path.isdir(img_root)}）")
+        print("           -> 路径对不上就改 configs/datasets.yaml 里的 image_dir；"
+              "字段名对不上就在 adapters/realiad.py 的 _IMG_KEYS 里补一个")
+
     def iter_samples(self) -> Iterator[UnifiedSample]:
         jdir = os.path.join(self.root, self.opts.get("json_dir", "realiad_jsons"))
         if not os.path.isdir(jdir):
+            print(f"[real_iad] 找不到元数据目录 {jdir}，"
+                  f"确认 realiad_jsons.zip 已解压")
             return
+        n_yield = 0
         img_root = os.path.join(self.root, self.opts.get("image_dir", "realiad_1024"))
         if not os.path.isdir(img_root):
             img_root = self.root
@@ -43,8 +70,21 @@ class RealIADAdapter(BaseAdapter):
                 continue
             with open(os.path.join(jdir, jf), encoding="utf-8") as f:
                 data = json.load(f)
-            for split in ("train", "test"):
-                for item in (data.get(split) or []):
+
+            # 不同发布版本的 json 顶层键不一定叫 train/test，兜底找任意
+            # "值是一串 dict" 的键当作一个 split
+            if isinstance(data, list):
+                splits = {"train": data}
+            else:
+                splits = {k: data[k] for k in ("train", "test")
+                          if isinstance(data.get(k), list)}
+                if not splits:
+                    splits = {k: v for k, v in data.items()
+                              if isinstance(v, list) and v and isinstance(v[0], dict)}
+
+            before = n_yield
+            for split, items in splits.items():
+                for item in items:
                     rel = _pick(item, _IMG_KEYS)
                     if not rel:
                         continue
@@ -68,4 +108,8 @@ class RealIADAdapter(BaseAdapter):
                         raw_defect="" if is_ok else raw,
                         meta={"view": _pick(item, _VIEW_KEYS)})
                     if s:
+                        n_yield += 1
                         yield s
+
+            if n_yield == before:
+                self._diagnose(cat, data, splits, img_root)
