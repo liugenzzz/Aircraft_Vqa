@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """导出为 Qwen3-VL 指令微调可直接吃的格式。
 
-支持三种：
-  llamafactory : LLaMA-Factory 的 sharegpt/messages 风格
+支持四种：
+  sharegpt     : ShareGPT 风格（conversations + from/value），LLaMA-Factory 默认吃这个
+  llamafactory : messages 风格（role/content）
   swift        : ms-swift 的 messages 风格（坐标用 abs 时由 swift 自行归一化）
   openai       : OpenAI/Qwen 官方 messages（content 为多模态 parts 列表）
 
@@ -49,6 +50,28 @@ def to_llamafactory(r: dict, image_root=None, relative=False,
     return {"messages": msgs, "images": [_img_path(r["image"], image_root, relative)]}
 
 
+def to_sharegpt(r: dict, image_root=None, relative=False,
+                with_system=True) -> dict:
+    """ShareGPT 格式：conversations 用 from/value，system 提到顶层。
+
+        {"conversations": [{"from": "human", "value": "<image>问题"},
+                           {"from": "gpt",   "value": "答案"}],
+         "system": "...", "images": ["/abs/path.jpg"]}
+
+    多轮就是继续追加 human/gpt 对，图片 token 只挂第一轮。
+    """
+    convs = []
+    for i, (q, a) in enumerate(_turn_pairs(r)):
+        convs.append({"from": "human",
+                      "value": f"{IMAGE_TOKEN}{q}" if i == 0 else q})
+        convs.append({"from": "gpt", "value": a})
+    out = {"conversations": convs,
+           "images": [_img_path(r["image"], image_root, relative)]}
+    if with_system and r.get("system"):
+        out["system"] = r["system"]
+    return out
+
+
 def to_swift(r: dict, image_root=None, relative=False, with_system=True) -> dict:
     msgs = []
     if with_system and r.get("system"):
@@ -80,6 +103,7 @@ def to_openai(r: dict, image_root=None, relative=False, with_system=True) -> dic
 
 
 EXPORTERS = {
+    "sharegpt": to_sharegpt,
     "llamafactory": to_llamafactory,
     "swift": to_swift,
     "openai": to_openai,

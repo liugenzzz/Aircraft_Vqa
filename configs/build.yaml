@@ -4,6 +4,9 @@ seed: 20260914
 # Qwen3-VL 原生坐标：[0,1000] 归一化。用 ms-swift 的 grounding 格式时改成 abs。
 coord_mode: norm1000
 box_label: zh            # 框里的 label 用中文 / en / canonical
+# 问法语言：zh = 只用中文问法（默认）；bilingual = 保留英文问法。
+# 英文问法原本占 3% 左右，不足以教会双语却会引入中英混杂，所以默认关掉。
+lang: zh
 
 max_qa_per_sample: 4
 n_options: 4
@@ -63,7 +66,7 @@ task_ratio:
 split_ratios: [0.95, 0.03, 0.02]
 
 export:
-  format: llamafactory      # llamafactory | swift | openai
+  format: sharegpt          # sharegpt | llamafactory | swift | openai
   with_system: true
   relative_paths: false
 

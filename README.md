@@ -40,15 +40,16 @@ python scripts/build_vqa.py --interim data/interim --out data/vqa \
 
 # 4) 人工抽检（必做）
 python scripts/visualize.py --vqa data/vqa/train.raw.jsonl -n 40 --out data/vis
+python scripts/preview_tasks.py --raw   # 每种任务抽一条真实训练行看看
 ```
 
 产出：
 
 ```
 data/vqa/
-  train.llamafactory.jsonl   # 可直接喂 LLaMA-Factory / ms-swift
-  val.llamafactory.jsonl
-  test.llamafactory.jsonl
+  train.sharegpt.jsonl       # ShareGPT 格式，可直接喂 LLaMA-Factory
+  val.sharegpt.jsonl
+  test.sharegpt.jsonl
   train.raw.jsonl            # 带完整元信息，用于抽检与二次加工
   stats.json                 # 分布统计 + 质检报告 + 配比达成情况
 ```
@@ -99,7 +100,7 @@ src/aircraft_vqa/
   geometry.py       mask→bbox、方位词、Qwen 坐标换算、smart_resize
   adapters/         MVTec / LOCO / VisA / Real-IAD / COCO / YOLO / 掩码分割
   vqa/              模板库+问法池、构建器、干扰项、负样本采样、大模型改写层
-  export/           LLaMA-Factory / ms-swift / OpenAI 三种导出格式
+  export/           ShareGPT / LLaMA-Factory / ms-swift / OpenAI 四种导出格式
   balance.py        两层平衡、分组切分、配比达成度
   qc.py             13 项自动质检
 scripts/
@@ -107,7 +108,7 @@ scripts/
                     roboflow_batch（批量下 Universe 长尾集）、各数据集单独脚本
   ingest / build_vqa / visualize / make_demo_data
   gen_question_bank 大模型扩写问法（一次性离线跑，强制指令式）
-tests/              68 个回归测试
+tests/              79 个回归测试
 ```
 
 ## 授权提醒

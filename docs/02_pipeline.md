@@ -296,25 +296,48 @@ DashScope 也走这个）把答案改写得更像一线机务的口吻，但有�
 
 离线环境 `provider: none`，整条流水线照常工作。
 
-## 11. 训练对接
+## 11. 语言策略
+
+训练数据**统一用中文**（`configs/build.yaml` 的 `lang: zh`）：
+
+- 问法：只用中文模板。仓库里原本有几条英文问法（约占 3%），
+  但这点占比不足以真的教会双语，却会引入中英混杂的不一致，所以默认过滤掉。
+  确实需要模型听懂英文指令时改成 `lang: bilingual`，并把英文占比提到 20% 以上
+  才有意义。
+- bbox 的 `label`：跟着问法语言走，中文问就是中文标签（`box_label: zh`）。
+- **保留的英文**：`classification_open` 的答案里会带术语括注，
+  形如"属于漆层剥落（paint peeling）"。这是刻意保留的 ——
+  维修手册（AMM/SRM）和工卡里的缺陷术语本来就是英文，
+  中文答案带一个英文括注符合实际文档习惯，也方便和手册对照。
+  不想要的话把 `templates.py` 的 `A_CLASSIFY_OPEN` 里 `（{defect_en}）` 去掉即可。
+
+选择题的干扰项只从 `active_defect_types` 里取 —— 否则选项里会冒出本期不训练
+的类型（比如只训 8 类却出现"多余件"），等于凭空教一个模型没见过的标签。
+可选类型不足时少出几个选项，而不是塞兜底项凑数。
+
+## 12. 训练对接
 
 ```bash
-# LLaMA-Factory（默认格式）
-python scripts/build_vqa.py --format llamafactory
+# ShareGPT（默认）—— LLaMA-Factory 直接吃
+python scripts/build_vqa.py
 
-# ms-swift
+# 其他格式
+python scripts/build_vqa.py --format llamafactory     # messages 风格
 python scripts/build_vqa.py --format swift --coord-mode abs
+python scripts/build_vqa.py --format openai
 ```
 
-导出条目形如：
+ShareGPT 导出条目形如：
 
 ```json
-{"messages": [
-   {"role": "system", "content": "你是一名民航机务维修视觉检查助手…"},
-   {"role": "user", "content": "<image>请在图中定位所有紧固件缺失的位置，用 JSON 输出边界框。"},
-   {"role": "assistant", "content": "[{\"bbox_2d\": [412, 533, 465, 601], \"label\": \"紧固件缺失\"}]"}],
+{"conversations": [
+   {"from": "human", "value": "<image>请在图中定位所有紧固件缺失的位置，用 JSON 输出边界框。"},
+   {"from": "gpt",   "value": "[{\"bbox_2d\": [412, 533, 465, 601], \"label\": \"紧固件缺失\"}]"}],
+ "system": "你是一名民航机务维修视觉检查助手…",
  "images": ["/abs/path/panel_000123.jpg"]}
 ```
+
+多轮就是继续追加 human/gpt 对，`<image>` 只挂第一轮。
 
 定位任务用的是更严格的 grounding system prompt（要求只输出 JSON、
 无目标时输出 `[]`），识别任务用通用 system prompt。

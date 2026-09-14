@@ -21,7 +21,7 @@ import sys
 
 import _bootstrap  # noqa: F401
 
-from aircraft_vqa.export.qwen3vl import to_llamafactory
+from aircraft_vqa.export import EXPORTERS
 
 TASK_DESC = {
     "grounding_single": ("缺陷定位", "给定缺陷类型，输出该类型所有实例的边界框"),
@@ -60,6 +60,10 @@ def main() -> int:
     ap.add_argument("--out", default="data/vqa/preview.jsonl")
     ap.add_argument("--dataset", default=None, help="只从这个源里挑")
     ap.add_argument("--seed", type=int, default=7)
+    ap.add_argument("--format", default="sharegpt",
+                    help="sharegpt|llamafactory|swift|openai")
+    ap.add_argument("--raw", action="store_true",
+                    help="只输出训练文件里真实的那一行，不带任务说明等元信息")
     args = ap.parse_args()
 
     records = []
@@ -72,6 +76,7 @@ def main() -> int:
     if args.dataset:
         records = [r for r in records if r["dataset"] == args.dataset]
 
+    export = EXPORTERS[args.format]
     rng = random.Random(args.seed)
     rows, missing = [], []
     for task in ORDER:
@@ -102,8 +107,8 @@ def main() -> int:
                   "region_answer", "yes_no", "severity"):
             if k in r:
                 row[k] = r[k]
-        row["导出后（LLaMA-Factory 格式）"] = to_llamafactory(r)
-        rows.append(row)
+        row[f"导出后（{args.format} 格式）"] = export(r)
+        rows.append(export(r) if args.raw else row)
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as f:
@@ -111,8 +116,10 @@ def main() -> int:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     print(f"{len(rows)}/{len(ORDER)} 种任务各抽一条 -> {args.out}")
-    for row in rows:
-        print(f"  [{row['任务族']}] {row['任务']:20s} {row['来源']}")
+    for task in ORDER:
+        if task not in missing:
+            fam, _ = TASK_DESC[task]
+            print(f"  [{fam}] {task}")
     if missing:
         print(f"\n当前数据没有这些任务：{missing}")
         print("  grade_assessment 需要带有序等级标注的源（VT 腐蚀分级集）")

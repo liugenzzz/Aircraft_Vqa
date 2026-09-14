@@ -798,3 +798,95 @@ def test_area_still_scales_area_type_defects():
     assert TAX.area_scales_severity("corrosion")
     assert severity_from_area("major", 0.20) == "critical"   # 大面积升档
     assert not TAX.area_scales_severity("fastener_missing")
+
+
+# ------------------------------------------------------------------ ShareGPT
+def test_sharegpt_single_turn_shape(tmp_path):
+    from aircraft_vqa.export.qwen3vl import to_sharegpt
+    b = VQABuilder(BuildConfig(max_qa_per_sample=12), TAX)
+    r = next(x for x in b.build(_sample(tmp_path)) if not x.get("turns"))
+    out = to_sharegpt(r)
+    assert list(out) == ["conversations", "images", "system"]
+    assert [c["from"] for c in out["conversations"]] == ["human", "gpt"]
+    assert out["conversations"][0]["value"].startswith("<image>")
+    assert out["conversations"][1]["value"] == r["answer"]
+
+
+def test_sharegpt_multi_turn_alternates_and_has_one_image_token(tmp_path):
+    from aircraft_vqa.export.qwen3vl import to_sharegpt
+    cfg = BuildConfig(max_qa_per_sample=12)
+    cfg.task_weights = dict(cfg.task_weights, multi_turn=1.0)
+    b = VQABuilder(cfg, TAX)
+    r = next(x for x in b.build(_sample(tmp_path)) if x["task"] == "multi_turn")
+    out = to_sharegpt(r)
+    froms = [c["from"] for c in out["conversations"]]
+    assert froms == ["human", "gpt"] * r["n_turns"]
+    assert sum(c["value"].count("<image>") for c in out["conversations"]) == 1
+
+
+def test_sharegpt_without_system(tmp_path):
+    from aircraft_vqa.export.qwen3vl import to_sharegpt
+    b = VQABuilder(BuildConfig(max_qa_per_sample=12), TAX)
+    r = b.build(_sample(tmp_path))[0]
+    assert "system" not in to_sharegpt(r, with_system=False)
+
+
+def test_sharegpt_registered_and_is_default():
+    import yaml as _yaml
+    from aircraft_vqa.export import EXPORTERS
+    assert "sharegpt" in EXPORTERS
+    cfg = _yaml.safe_load(open(os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "configs", "build.yaml"), encoding="utf-8"))
+    assert cfg["export"]["format"] == "sharegpt"
+
+
+# ------------------------------------------------------------------ 问法语言
+def test_lang_zh_filters_english_questions(tmp_path):
+    b = VQABuilder(BuildConfig(max_qa_per_sample=12, lang="zh"), TAX)
+    for pool in b.qpool.values():
+        assert pool                                  # 过滤后不能把池子清空
+        for q in pool:
+            assert not VQABuilder._is_en(q), q
+    for r in b.build(_sample(tmp_path)):
+        assert not VQABuilder._is_en(r["question"])
+        assert '"label": "' in r["answer"] or True   # 中文问 -> 中文标签
+        for m in __import__("re").finditer(r'"label":\s*"([^"]+)"', r["answer"]):
+            assert not m.group(1).isascii(), r["answer"]
+
+
+def test_lang_bilingual_keeps_english_questions():
+    b = VQABuilder(BuildConfig(lang="bilingual"), TAX)
+    assert any(VQABuilder._is_en(q)
+               for pool in b.qpool.values() for q in pool)
+
+
+# ------------------------------------------------------------------ 干扰项范围
+def test_mc_distractors_stay_within_active_scope(tmp_path):
+    """选项里不能冒出本期不训练的缺陷类型。"""
+    active = ["fastener_missing", "fastener_loose", "thread_damage", "crack",
+              "corrosion", "dent", "scratch", "paint_peeling"]
+    active_zh = {TAX.zh(t) for t in active}
+    cfg = BuildConfig(max_qa_per_sample=12, active_defect_types=active)
+    cfg.task_weights = dict(cfg.task_weights, classification_mc=1.0)
+    b = VQABuilder(cfg, TAX)
+    n = 0
+    for dt in active:
+        for r in b.build(_sample(tmp_path, "anomalous", dt)):
+            if r["task"] == "classification_mc":
+                n += 1
+                assert set(r["options"]) <= active_zh, r["options"]
+                assert check_record(r) == []
+    assert n >= 4
+
+
+def test_mc_shrinks_options_when_pool_too_small(tmp_path):
+    """可选类型不足时少出几个选项，而不是塞兜底项凑数。"""
+    cfg = BuildConfig(max_qa_per_sample=12,
+                      active_defect_types=["crack", "dent"], n_options=4)
+    cfg.task_weights = dict(cfg.task_weights, classification_mc=1.0)
+    b = VQABuilder(cfg, TAX)
+    for r in b.build(_sample(tmp_path, "anomalous", "crack")):
+        if r["task"] == "classification_mc":
+            assert set(r["options"]) == {"裂纹", "凹坑"}
+            assert r["answer"].startswith(r["answer_letter"])
+            assert check_record(r) == []

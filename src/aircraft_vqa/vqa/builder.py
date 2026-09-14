@@ -66,6 +66,10 @@ class BuildConfig:
     active_defect_types: Optional[list] = None
     # 大模型扩写出的问法库（scripts/gen_question_bank.py 产出）
     question_bank: Optional[str] = None
+    # 问法语言：zh = 只用中文问法（默认）；bilingual = 保留英文问法。
+    # 英文问法占比很小（约 3%），不足以真的教会双语，却会引入中英混杂的不一致；
+    # 确实需要模型听懂英文指令的话再开 bilingual，并把占比提上去。
+    lang: str = "zh"
 
 
 class VQABuilder:
@@ -75,6 +79,9 @@ class VQABuilder:
         self.tax = taxonomy or get_taxonomy()
         self.qpool = T.merged_questions(
             T.load_question_bank(self.cfg.question_bank))
+        if self.cfg.lang == "zh":
+            self.qpool = {k: [q for q in v if not self._is_en(q)] or v
+                          for k, v in self.qpool.items()}
         self.active = (set(self.cfg.active_defect_types)
                        if self.cfg.active_defect_types else None)
 
@@ -365,7 +372,8 @@ class VQABuilder:
                          T.SYSTEM_PROMPT, {"target_type": t})
 
     def _t_classify_mc(self, s, rng) -> dict:
-        opts, correct = make_options(self.tax, s.defect_types, self.cfg.n_options, rng)
+        opts, correct = make_options(self.tax, s.defect_types, self.cfg.n_options,
+                                     rng, active=self.active)
         q = T.Q_CLASSIFY_MC.format(options=format_options(opts), **self._ctx(s))
         a = f"{correct}. {opts['ABCDEF'.index(correct)]}"
         return self._rec(s, "classification_mc", "recognition", q, a, T.SYSTEM_PROMPT,

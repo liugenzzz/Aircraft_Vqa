@@ -14,23 +14,32 @@ LETTERS = "ABCDEF"
 
 
 def make_options(tax: Taxonomy, correct_types: list, n_options: int = 4,
-                 rng: Optional[random.Random] = None) -> tuple:
-    """返回 (选项文本列表, 正确答案字母)。选项文本为中文缺陷名。"""
+                 rng: Optional[random.Random] = None,
+                 active: Optional[set] = None) -> tuple:
+    """返回 (选项文本列表, 正确答案字母)。选项文本为中文缺陷名。
+
+    `active` 给定时，干扰项只从本期训练范围内的缺陷类型里取 —— 否则选项里会
+    冒出范围外的词（比如只训 8 类却出现"多余件"），等于凭空教了一个不训练的
+    标签，模型既没见过它的样子，也不知道该不该选。
+    """
     rng = rng or random
     correct = correct_types[0]
     correct_zh = tax.zh(correct)
     exclude = set(correct_types)
 
-    pool_near = [t for t in tax.siblings(correct) if t not in exclude]
+    def usable(t: str) -> bool:
+        return (t not in exclude and t != "other_anomaly"
+                and (active is None or t in active))
+
+    pool_near = [t for t in tax.siblings(correct) if usable(t)]
     pool_far = [t for t in tax.all_types()
-                if t not in exclude and t not in pool_near and t != "other_anomaly"]
+                if usable(t) and t not in pool_near]
     rng.shuffle(pool_near)
     rng.shuffle(pool_far)
 
     need = n_options - 1
     distract = (pool_near + pool_far)[:need]
-    if len(distract) < need:                       # 极端情况兜底
-        distract += ["other_anomaly"] * (need - len(distract))
+    n_options = min(n_options, len(distract) + 1)  # 可选类型不够就少出几个选项
 
     opts = [correct_zh] + [tax.zh(t) for t in distract]
     # 去重后可能不足，补齐

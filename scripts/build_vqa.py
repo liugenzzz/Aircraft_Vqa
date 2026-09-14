@@ -71,7 +71,8 @@ def main() -> int:
     ap.add_argument("--taxonomy", default="configs/taxonomy.yaml")
     ap.add_argument("--out", default="data/vqa")
     ap.add_argument("--total", type=int, default=None, help="目标问答总量")
-    ap.add_argument("--format", default=None, help="llamafactory|swift|openai")
+    ap.add_argument("--format", default=None,
+                    help="sharegpt|llamafactory|swift|openai")
     ap.add_argument("--coord-mode", default=None, help="norm1000|abs")
     ap.add_argument("--only", nargs="*", default=None, help="只用这些数据源")
     ap.add_argument("--commercial-only", action="store_true")
@@ -124,6 +125,7 @@ def main() -> int:
         skip_unknown_type_tasks=cfg.get("skip_unknown_type_tasks", True),
         active_defect_types=cfg.get("active_defect_types"),
         question_bank=cfg.get("question_bank"),
+        lang=cfg.get("lang", "zh"),
     )
     if bcfg.active_defect_types:
         print(f"[scope] 本期缺陷范围 {len(bcfg.active_defect_types)} 类："
@@ -202,7 +204,7 @@ def main() -> int:
     splits = group_split(records, tuple(cfg.get("split_ratios", [0.95, 0.03, 0.02])),
                          cfg.get("seed", 0))
     exp = cfg.get("export", {})
-    fmt = args.format or exp.get("format", "llamafactory")
+    fmt = args.format or exp.get("format", "sharegpt")
     n_total = 0
     for name, recs in splits.items():
         if not recs:
