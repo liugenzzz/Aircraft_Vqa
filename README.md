@@ -103,10 +103,11 @@ src/aircraft_vqa/
   balance.py        两层平衡、分组切分、配比达成度
   qc.py             13 项自动质检
 scripts/
-  download/         download_all（一站式取数 + 手动清单）、各数据集单独脚本
+  download/         download_all（一站式取数 + 手动清单）、
+                    roboflow_batch（批量下 Universe 长尾集）、各数据集单独脚本
   ingest / build_vqa / visualize / make_demo_data
   gen_question_bank 大模型扩写问法（一次性离线跑，强制指令式）
-tests/              49 个回归测试
+tests/              68 个回归测试
 ```
 
 ## 授权提醒

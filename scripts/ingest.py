@@ -38,7 +38,8 @@ def resolve(spec: dict, data_root: str) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default="configs/datasets.yaml")
+    ap.add_argument("--config", action="append", default=None,
+                    help="数据源配置，可给多次（如再加一个 datasets.extra.yaml）")
     ap.add_argument("--taxonomy", default="configs/taxonomy.yaml")
     ap.add_argument("--out", default="data/interim")
     ap.add_argument("--data-root", default=None, help="覆盖 defaults.data_root")
@@ -47,9 +48,26 @@ def main() -> int:
                     help="只处理可商用的数据源")
     args = ap.parse_args()
 
-    cfg = yaml.safe_load(open(args.config, encoding="utf-8"))
-    data_root = os.path.expanduser(
-        args.data_root or cfg.get("defaults", {}).get("data_root", "~/data/raw"))
+    configs = args.config or ["configs/datasets.yaml"]
+    specs, default_root = [], "~/data/raw"
+    for cp in configs:
+        if not os.path.exists(cp):
+            print(f"[warn] 配置不存在，跳过：{cp}")
+            continue
+        part = yaml.safe_load(open(cp, encoding="utf-8")) or {}
+        specs.extend(part.get("datasets") or [])
+        default_root = part.get("defaults", {}).get("data_root", default_root)
+    if not specs:
+        print(f"没有读到任何数据源配置：{configs}")
+        return 1
+    seen, cfg_datasets = set(), []
+    for sp in specs:                      # 同名条目后来者覆盖前者
+        if sp["name"] in seen:
+            cfg_datasets = [x for x in cfg_datasets if x["name"] != sp["name"]]
+        seen.add(sp["name"])
+        cfg_datasets.append(sp)
+    cfg = {"datasets": cfg_datasets}
+    data_root = os.path.expanduser(args.data_root or default_root)
     tax = get_taxonomy(os.path.abspath(args.taxonomy))
     os.makedirs(args.out, exist_ok=True)
 

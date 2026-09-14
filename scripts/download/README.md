@@ -80,8 +80,38 @@ python scripts/download/download_all.py --data-root ~/data/raw --check
 1. **Roboflow `ddiisc/aircraft_skin_defects`** —— 含 `Missing-head`，唯一直接
    命中"螺丝缺失"的航空标注（有 API Key 就自动下）
 2. **MVTec AD `screw`** —— 螺纹损伤的真实数据金标准（**禁止商用**）
-3. **Aircraft_Fuselage_DET2023** —— 真实机身实拍，航空域外观别的集给不了
-4. **Real-IAD** —— 取 512 版 + 三五个类就行，别下 raw 全量（**禁止商用**）
+3. **Real-IAD** —— 取 512 版 + 三五个类就行，别下 raw 全量（**禁止商用**）
+4. **Aircraft_Fuselage_DET2023** —— 可选。IEEE DataPort 上可能要付费，
+   下不到不影响流水线（航空层还有 UTS 9,352 张顶着）
+
+## 航空域数据不够时怎么补
+
+航空真实层决定最终域表现，这一层越厚越好。Fuselage2023 拿不到的话：
+
+```bash
+# 1) 到 Universe 搜索页挑项目，一行一个写进清单
+#    https://universe.roboflow.com/search?q=aircraft+defect
+#    https://universe.roboflow.com/search?q=class%3Arivet
+#    https://universe.roboflow.com/search?q=class%3Acorrosion
+cat > aircraft_extra.txt <<'EOF'
+ddiisc/aircraft-skin-defects-revised-annotations-631bu
+# workspace/project，:版本号可选，# 开头是注释
+EOF
+
+# 2) 批量下并生成配置
+export ROBOFLOW_API_KEY=xxx
+python scripts/download/roboflow_batch.py --list-file aircraft_extra.txt \
+    --data-root ~/data/raw
+
+# 3) 多配置一起喂给 ingest
+python scripts/ingest.py --config configs/datasets.yaml \
+    --config configs/datasets.extra.yaml --data-root ~/data/raw
+```
+
+单个几百张，合并十来个就能顶一个中等数据集。
+
+> Universe 上**逐个项目的授权都不同**，生成的配置里 `commercial_ok` 一律
+> 填 `false`，核对过项目页的 License 再自己放开。
 
 ## 单独的脚本
 

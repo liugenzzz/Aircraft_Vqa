@@ -203,7 +203,7 @@ SOURCES = [
     {
         "name": "aircraft_fuselage_det2023",
         "mode": "manual",
-        "rec": "推荐（航空域真实数据，别的集给不了）",
+        "rec": "可选 —— IEEE DataPort 可能要付费，下不到不影响流水线",
         "zh": "Aircraft_Fuselage_DET2023（5,601 图机身缺陷）",
         "use": "★ 不同光照下实拍机身不同部位的四类表面缺陷，"
                "外加一个无标注池可做半监督",
@@ -225,6 +225,10 @@ SOURCES = [
             "引用写《A Semi-Supervised Aircraft Fuselage Defect Detection Network with "
             "Dynamic Attention and Class-aware Adaptive Pseudo-Label Assignment》，"
             "页面上明确要求",
+            "**下不到也不要紧**：航空域这一层还有 UTS（9,352 张）和 "
+            "aircraft_skin_defects 顶着。想补多样性就用 "
+            "scripts/download/roboflow_batch.py 把 Universe 上的长尾小集合并起来；"
+            "另外直接发邮件问论文作者要，学术数据集这条路成功率不低",
         ],
         "config_key": "（需自行新增条目）",
     }

@@ -674,3 +674,82 @@ def test_realiad_diagnoses_when_nothing_matches(tmp_path, capsys):
     assert "读出 0 条样本" in out
     assert "条目字段" in out            # 把实际字段名亮出来
     assert "image_dir" in out           # 并指出该改哪里
+
+
+# ------------------------------------------------------------------ Roboflow 批量
+def test_roboflow_batch_parses_list(tmp_path, capsys):
+    rb = _load_script(os.path.join("download", "roboflow_batch.py"))
+    lf = tmp_path / "list.txt"
+    lf.write_text(
+        "# 注释行\n"
+        "\n"
+        "ddiisc/aircraft_skin_defects\n"
+        "someone/rivet-inspection:3\n"
+        "  spaced/proj  # 行尾注释\n"
+        "格式不对的行\n", encoding="utf-8")
+    items = rb.parse_list(str(lf))
+    assert items == [
+        {"ws": "ddiisc", "proj": "aircraft_skin_defects", "ver": "latest"},
+        {"ws": "someone", "proj": "rivet-inspection", "ver": "3"},
+        {"ws": "spaced", "proj": "proj", "ver": "latest"}]
+    assert "格式不对" in capsys.readouterr().out
+
+
+def test_roboflow_batch_safe_name():
+    rb = _load_script(os.path.join("download", "roboflow_batch.py"))
+    assert rb.safe_name("aircraft-skin-defects-631bu") == "aircraft_skin_defects_631bu"
+    assert rb.safe_name("Rivet.Inspection v2") == "rivet_inspection_v2"
+
+
+def test_generated_entry_is_valid_yaml_and_not_commercial():
+    import yaml as _yaml
+    rb = _load_script(os.path.join("download", "roboflow_batch.py"))
+    entry = rb.ENTRY.format(name="rf_demo", root="/tmp/x", ws="ws", proj="proj")
+    doc = _yaml.safe_load("datasets:\n" + entry)
+    d = doc["datasets"][0]
+    assert d["adapter"] == "coco" and d["name"] == "rf_demo"
+    # 授权逐集不同，生成的条目必须默认不可商用
+    assert d["commercial_ok"] is False
+
+
+# ------------------------------------------------------------------ 多配置 ingest
+def test_ingest_merges_configs_with_override(tmp_path):
+    import yaml as _yaml
+    ing = _load_script("ingest.py")
+    base = tmp_path / "a.yaml"
+    base.write_text(_yaml.safe_dump({
+        "defaults": {"data_root": "/base"},
+        "datasets": [{"name": "x", "adapter": "coco", "root": "r1"},
+                     {"name": "y", "adapter": "coco", "root": "r2"}]}),
+        encoding="utf-8")
+    extra = tmp_path / "b.yaml"
+    extra.write_text(_yaml.safe_dump({
+        "datasets": [{"name": "x", "adapter": "yolo", "root": "r9"},
+                     {"name": "z", "adapter": "coco", "root": "r3"}]}),
+        encoding="utf-8")
+
+    import sys as _s
+    argv = _s.argv
+    _s.argv = ["ingest", "--config", str(base), "--config", str(extra),
+               "--out", str(tmp_path / "out"), "--data-root", str(tmp_path)]
+    try:
+        ing.main()          # 目录都不存在，只验配置合并不报错
+    finally:
+        _s.argv = argv
+
+
+def test_resolve_falls_back_to_alternative_root(tmp_path):
+    ing = _load_script("ingest.py")
+    (tmp_path / "MVTec_AD").mkdir()
+    spec = ing.resolve({"name": "m", "root": "{data_root}/mvtec_anomaly_detection",
+                        "root_alternatives": ["{data_root}/MVTec_AD"]},
+                       str(tmp_path))
+    assert spec["root"] == str(tmp_path / "MVTec_AD")
+    assert len(spec["_tried_roots"]) == 2
+
+
+def test_resolve_keeps_primary_when_none_exist(tmp_path):
+    ing = _load_script("ingest.py")
+    spec = ing.resolve({"name": "m", "root": "{data_root}/primary",
+                        "root_alternatives": ["{data_root}/other"]}, str(tmp_path))
+    assert spec["root"].endswith("primary")     # 报错信息里给主路径
