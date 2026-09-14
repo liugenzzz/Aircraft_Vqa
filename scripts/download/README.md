@@ -6,12 +6,10 @@
 python scripts/download/download_all.py --data-root ~/data/raw
 ```
 
-有凭据的话一起设上，Roboflow 和 Kaggle 也会自动下：
+设上 Roboflow 的 key，那两个航空集也会自动下：
 
 ```bash
 export ROBOFLOW_API_KEY=xxx        # https://app.roboflow.com → Settings → Roboflow API
-# Kaggle：把 kaggle.json 放到 ~/.kaggle/，或设 KAGGLE_USERNAME / KAGGLE_KEY
-pip install kaggle
 ```
 
 > **Key 不要写进任何文件、也不要提交进仓库**，只用环境变量。
@@ -37,10 +35,19 @@ python scripts/download/download_all.py --n-synth 8000   # 合成数据张数
 
 | 方式 | 含义 | 涉及数据集 |
 |---|---|---|
-| 直链自动下 | 脚本直接拉 | VisA（1.9 GB，CC BY 4.0 可商用） |
+| 直链自动下 | 脚本直接拉 | VisA（1.9 GB，CC BY 4.0 可商用）、VT 腐蚀分级集 |
 | 本地生成 | 不需要网络 | 合成蒙皮阵列 + 紧固件特写（8 类缺陷全覆盖） |
-| 需凭据 | 有直链但要 API Key | Roboflow 航空集 ×2、NPU-BOLT(Kaggle) |
-| 需人工获取 | 必须同意条款或提交申请 | MVTec AD、MVTec LOCO、VT 腐蚀集、Real-IAD、IEEE DataPort、Bolt-Rotation |
+| 需凭据 | 有直链但要 API Key | Roboflow 航空集 ×2 |
+| 需人工获取 | 必须同意条款或提交申请 | MVTec AD、MVTec LOCO、Real-IAD、Aircraft_Fuselage_DET2023 |
+
+## 调研过但不接入的
+
+| 数据集 | 为什么不接 |
+|---|---|
+| NPU-BOLT | 标的是"螺栓这个物体"而非缺陷，走 `adapter: coco` 会把每颗**正常**螺栓当成一处缺陷。要用得单独写个把框当对象框的 adapter |
+| Bolt-Rotation | 单一装置 + 实验室受控光照，视觉域迁不到真实航空场景；松动的外观合成特写场景已能覆盖。只有需要"松动是连续量"这个概念监督时才值得接 |
+
+理由详见 [docs/01_dataset_survey.md](../../docs/01_dataset_survey.md)，那里保留了完整调研记录。
 
 ## 需要你手动下的那几个
 
@@ -68,12 +75,13 @@ python scripts/download/download_all.py --data-root ~/data/raw --check
 实在不行就走浏览器：打开项目页 → **Download Dataset** → 选 **COCO** →
 下到本地解压到脚本提示的那个目录，效果一样。
 
-优先级上，这三个最值得花时间弄：
+优先级：
 
 1. **Roboflow `ddiisc/aircraft_skin_defects`** —— 含 `Missing-head`，唯一直接
    命中"螺丝缺失"的航空标注（有 API Key 就自动下）
 2. **MVTec AD `screw`** —— 螺纹损伤的真实数据金标准（**禁止商用**）
-3. **VT 腐蚀分级集** —— 唯一带锈蚀严重度分级的公开集
+3. **Aircraft_Fuselage_DET2023** —— 真实机身实拍，航空域外观别的集给不了
+4. **Real-IAD** —— 取 512 版 + 三五个类就行，别下 raw 全量（**禁止商用**）
 
 ## 单独的脚本
 

@@ -147,20 +147,6 @@ datasets:
     background_values: [0]
     notes: "4 级腐蚀像素分割，支撑'锈蚀到什么程度 / 怎么处理'的分级问答。"
 
-  # ---------------- 螺栓 ----------------
-  - name: npu_bolt
-    adapter: coco
-    root: "{data_root}/NPU-BOLT"
-    enabled: false
-    priority: 3
-    license: "学术开放"
-    commercial_ok: false
-    url: https://arxiv.org/pdf/2205.11191
-    category: bolt
-    object_hint:
-      bolt: bolt
-    notes: "自然场景螺栓检测，补 MVTec 白底摆拍的短板。"
-
   # ---------------- 合成数据（本仓库生成，完全可商用） ----------------
   - name: synthetic_panel
     adapter: coco

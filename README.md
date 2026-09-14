@@ -23,8 +23,7 @@ pip install -r requirements.txt
 
 # 1) 一站式取数：能自动下的直接下，不能自动下的生成待办清单
 python scripts/download/download_all.py --data-root ~/data/raw
-#    有 Roboflow / Kaggle 凭据的话一起设上，这两家也会自动下：
-#    export ROBOFLOW_API_KEY=xxx；~/.kaggle/kaggle.json
+#    设上 Roboflow 的 key，两个航空集也会自动下：export ROBOFLOW_API_KEY=xxx
 python scripts/download/download_all.py --data-root ~/data/raw --list   # 只看清单
 python scripts/download/download_all.py --data-root ~/data/raw --check  # 手动下完体检
 
@@ -69,8 +68,8 @@ data/vqa/
 
 1. **航空真实层**（域外观）：Roboflow `aircraft_skin_defects`（含 `Missing-head`，
    唯一直接命中"螺丝缺失"的航空标注）、UTS `aircraft-defect-detection`（9,352 张）
-2. **紧固件语义层**（细粒度）：MVTec AD `screw`、MVTec LOCO `screw_bag`
-   （缺件/数量错/规格错）、NPU-BOLT、Bolt-Rotation（唯一可量化"松动"）、Real-IAD
+2. **紧固件语义层**（细粒度）：MVTec AD `screw`（螺纹损伤）、MVTec LOCO `screw_bag`
+   （缺件/数量错/规格错）、Real-IAD（每视角单独标注，"换角度确认"的监督现成）
 3. **缺陷形态层**（锈蚀/裂纹）：VT Corrosion CS（4 级锈蚀像素分级）、VisA、NEU-DET
 
 再复用 MMAD 的 7 子任务题型体系，混入 Anomaly-Instruct-125k 防遗忘。

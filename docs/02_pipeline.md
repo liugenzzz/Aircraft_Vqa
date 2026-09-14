@@ -81,7 +81,7 @@ class_map: {1: good, 2: fair, 3: poor, 4: severe}
 | 族 | 类型 | 严重度 | 主要数据来源 |
 |---|---|---|---|
 | 紧固件 | `fastener_missing` 紧固件缺失 | major | 合成蒙皮 + Roboflow `Missing-head` |
-| | `fastener_loose` 紧固件松动 | major | 合成蒙皮 + Bolt-Rotation |
+| | `fastener_loose` 紧固件松动 | major | 合成蒙皮（螺栓外凸 + 投影拉长） |
 | | `thread_damage` 螺纹损伤 | major | **合成特写** + MVTec AD `screw` |
 | 结构 | `crack` 裂纹 | **critical** | **合成蒙皮** + Roboflow `Crack` |
 | | `dent` 凹坑 | major | 合成蒙皮 + UTS |

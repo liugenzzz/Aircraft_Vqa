@@ -10,7 +10,7 @@
 四种获取方式：
   auto     直链，脚本直接下（VisA）
   local    本地生成，不需要网络（合成数据）
-  keyed    有直链但要 API Key / 凭据（Roboflow、Kaggle），设了环境变量就自动下
+  keyed    有直链但要 API Key（Roboflow），设了环境变量就自动下
   manual   必须人工同意条款或申请（MVTec、Real-IAD、IEEE DataPort）
 
 manual 的会写进 <data_root>/../MANUAL_DOWNLOADS.md，里面写清了：去哪下、
@@ -94,26 +94,6 @@ SOURCES = [
                "project": "aircraft-defect-detection", "version": "latest"},
         "config_key": "uts_aircraft_defect",
         "config_names": ["uts_aircraft_defect"],
-    },
-    {
-        "name": "npu_bolt",
-        "mode": "keyed",
-        "rec": "暂不建议 —— 标的是螺栓这个物体，不是缺陷",
-        "zh": "NPU-BOLT（337 图，自然场景螺栓 4 类）",
-        "use": "只适合做计数与指代定位；现有 coco adapter 会把每颗正常螺栓"
-               "当成一处缺陷，需要单独写 adapter",
-        "dest": "NPU-BOLT",
-        "probe": "train/_annotations.coco.json",
-        "size": "约 200 MB",
-        "license": "学术开放",
-        "env": "KAGGLE_USERNAME + KAGGLE_KEY",
-        "env_how": "https://www.kaggle.com/settings → Create New Token，"
-                   "把 kaggle.json 放到 ~/.kaggle/ 或设这两个环境变量",
-        "kaggle": "xiaoqian0/npu-bolt-dataset",
-        "page": "https://arxiv.org/pdf/2205.11191",
-        "config_key": "npu_bolt",
-        "config_names": [],
-        "note": "Kaggle 上的数据集 slug 可能随作者调整，下不到就按 page 里的论文找最新链接。",
     },
     {
         "name": "mvtec_ad",
@@ -240,36 +220,17 @@ SOURCES = [
             "页面上明确要求",
         ],
         "config_key": "（需自行新增条目）",
-    },
-    {
-        "name": "bolt_rotation",
-        "mode": "manual",
-        "rec": "暂不建议 —— 单一装置 + 实验室光照，视觉域迁不过去",
-        "zh": "Bolt Rotation Dataset（1,112 图，带转角标注）",
-        "use": "价值在标签不在图像：公开数据里唯一把松动量化成连续角度的",
-        "dest": "bolt_rotation",
-        "probe": "images",
-        "size": "约 500 MB",
-        "license": "Data in Brief 开放获取（DOI 10.1016/j.dib.2025.111788）",
-        "page": "https://www.sciencedirect.com/science/article/pii/S2352340925005153",
-        "note": "自制装置上五颗 M20 螺栓、三颗逐步逆时针旋转，单反 + 四个焦距、"
-                "多机位，实验室受控光照。跟 MVTec 是同一类短板：视觉域几乎迁不到"
-                "真实航空场景。只适合当'松动是连续量而非二值状态'的概念监督源，"
-                "别指望拿它训出能用的检测器 —— 合成特写场景已经能覆盖松动的外观。",
-        "steps": [
-            "**务必从论文的 Data Availability 一节点链接过去**：同一批作者在 Figshare 上"
-            "还有一个名字很像的《A dataset depicting simulated bolt rotation》（9.88 GB，"
-            "是仿真的），直接搜名字容易拿错。要的是实拍那 1,112 张",
-            "解压到 {full_dest}",
-            "转角标注是 CSV，需要写一个 adapter 把角度阈值映射成 fastener_loose；"
-            "本仓库暂未提供",
-        ],
-        "config_key": "（需自行新增条目 + adapter）",
-    },
+    }
 ]
 
 MODE_ZH = {"auto": "直链自动下", "local": "本地生成", "keyed": "需凭据",
            "manual": "需人工获取"}
+
+# 调研过但**不接入**的数据源，以及为什么 —— 见 docs/01_dataset_survey.md：
+#   NPU-BOLT        标的是"螺栓这个物体"而非缺陷，走 coco adapter 会把每颗
+#                   正常螺栓当成一处缺陷；要用得单独写 adapter
+#   Bolt-Rotation   单一装置 + 实验室受控光照，视觉域迁不到真实航空场景；
+#                   松动的外观合成特写场景已能覆盖
 
 
 # ---------------------------------------------------------------- 工具
@@ -377,20 +338,6 @@ def do_roboflow(root: str, src: dict) -> bool:
            "--project", src["rf"]["project"],
            "--version", src["rf"]["version"], "--out", dest]
     return subprocess.call(cmd) == 0 and _present(root, src)
-
-
-def do_kaggle(root: str, src: dict) -> bool:
-    dest = os.path.join(root, src["dest"])
-    if not shutil.which("kaggle"):
-        print("  未安装 kaggle CLI：pip install kaggle")
-        return False
-    os.makedirs(dest, exist_ok=True)
-    rc = subprocess.call(["kaggle", "datasets", "download", "-d", src["kaggle"],
-                          "-p", dest, "--unzip"])
-    if rc != 0:
-        print(f"  kaggle 下载失败（slug 可能已变，见 {src.get('page')}）")
-        return False
-    return True
 
 
 # ---------------------------------------------------------------- 清单
@@ -538,7 +485,7 @@ def main() -> int:
                 print(f"  缺凭据 {missing}，跳过。获取方式：{s['env_how']}")
                 failed.append(s["name"])
                 continue
-            ok = do_roboflow(root, s) if "rf" in s else do_kaggle(root, s)
+            ok = do_roboflow(root, s)
         else:
             print(f"  需人工获取：{s['page']}")
             manual.append(s)
