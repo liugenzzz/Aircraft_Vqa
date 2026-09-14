@@ -420,8 +420,6 @@ class VQABuilder:
                             if k != "other_anomaly"])
             turns.append((rng.choice(T.Q_MT_T2_NEG).format(defect=self.tax.zh(t)),
                           "[]"))
-            turns.append((rng.choice(T.Q_MT_T3_NEG),
-                          rng.choice(T.A_MT_T3_NEG).format(**self._ctx(s))))
         if len(turns) < 2:
             return None
         return self._rec_multi(s, turns, T.SYSTEM_PROMPT,

@@ -118,6 +118,44 @@ def ratio_gap(records: list, task_ratio: dict) -> list:
     return sorted(rows, key=lambda r: r["attain"])
 
 
+def cap_class_imbalance(records: list, tasks, max_over_min: float = 3.0,
+                        key: str = "target_type", seed: int = 0) -> list:
+    """压平"类型识别"类任务的类别长尾。
+
+    `异常类别识别准确率` 这类指标通常按**宏平均**算（每类等权），
+    类别样本量差 4~5 倍时，样本最少的那几类学不动，宏平均会被直接拖死。
+    这里把最多的类下采样到 max_over_min × 最少类，其他任务不受影响。
+    """
+    rng = random.Random(seed)
+    tasks = set(tasks)
+    target, other = [], []
+    for r in records:
+        (target if r.get("task") in tasks and r.get(key) else other).append(r)
+    if not target:
+        return records
+
+    by_cls = defaultdict(list)
+    for r in target:
+        by_cls[r[key]].append(r)
+    n_min = min(len(v) for v in by_cls.values())
+    cap = max(1, int(n_min * max_over_min))
+
+    kept = []
+    for cls, rows in by_cls.items():
+        if len(rows) > cap:
+            rng.shuffle(rows)
+            rows = rows[:cap]
+        kept.extend(rows)
+    rng.shuffle(kept)
+    return other + kept
+
+
+def class_distribution(records: list, tasks, key: str = "target_type") -> dict:
+    tasks = set(tasks)
+    return dict(Counter(r[key] for r in records
+                        if r.get("task") in tasks and r.get(key)).most_common())
+
+
 def dedup(records: list) -> list:
     """按 (image, question, answer) 去重 —— 模板随机可能撞车。"""
     seen, out = set(), []

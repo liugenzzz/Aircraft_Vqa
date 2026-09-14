@@ -260,6 +260,8 @@ def test_multi_turn_normal_answers_empty_list(tmp_path):
     joined = " ".join(t["answer"] for t in r["turns"])
     assert "[]" in joined
     assert "bbox_2d" not in joined
+    # 正常图到"复查后无异常"就该结束，不再追加签署类流程套话
+    assert r["n_turns"] == 2
 
 
 def test_qc_catches_boxes_in_normal_dialog():
@@ -394,7 +396,7 @@ def test_seed_templates_are_not_colloquial():
     gqb = _load_script("gen_question_bank.py")
     from aircraft_vqa.vqa import templates as TT
     pools = list(TT.QUESTIONS.values()) + [
-        TT.Q_MT_T2_POS, TT.Q_MT_T2_NEG, TT.Q_MT_T3_POS, TT.Q_MT_T3_NEG]
+        TT.Q_MT_T2_POS, TT.Q_MT_T2_NEG, TT.Q_MT_T3_POS]
     for pool in pools:
         for q in pool:
             if q.isascii():          # 英文问法不走中文口语规则
@@ -458,3 +460,27 @@ def test_manual_manifest_lists_paths_and_steps(tmp_path):
         assert s["page"] in text
         assert os.path.join(str(tmp_path), s["dest"]) in text
     assert "{full_dest}" not in text          # 占位符必须都被替换掉
+
+
+# ------------------------------------------------------------------ 类别均衡
+def test_cap_class_imbalance_flattens_tail():
+    from aircraft_vqa.balance import cap_class_imbalance, class_distribution
+    recs = ([{"task": "classification_open", "target_type": "corrosion",
+              "qa_id": f"c{i}"} for i in range(100)] +
+            [{"task": "classification_open", "target_type": "dent",
+              "qa_id": f"d{i}"} for i in range(10)] +
+            [{"task": "grounding_all", "target_type": "corrosion",
+              "qa_id": f"g{i}"} for i in range(100)])
+    out = cap_class_imbalance(recs, ["classification_open"], max_over_min=3.0)
+    dist = class_distribution(out, ["classification_open"])
+    assert dist["dent"] == 10
+    assert dist["corrosion"] == 30                      # 3 × 最少类
+    # 其他任务不受影响
+    assert sum(r["task"] == "grounding_all" for r in out) == 100
+
+
+def test_cap_class_imbalance_noop_when_already_balanced():
+    from aircraft_vqa.balance import cap_class_imbalance
+    recs = [{"task": "classification_mc", "target_type": t, "qa_id": f"{t}{i}"}
+            for t in ("crack", "dent") for i in range(20)]
+    assert len(cap_class_imbalance(recs, ["classification_mc"], 3.0)) == len(recs)

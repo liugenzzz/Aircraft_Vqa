@@ -17,7 +17,8 @@ from collections import Counter
 import _bootstrap  # noqa: F401
 import yaml
 
-from aircraft_vqa.balance import (balance_samples, dedup, group_split,
+from aircraft_vqa.balance import (balance_samples, cap_class_imbalance,
+                                  class_distribution, dedup, group_split,
                                   quota_sample, ratio_gap, stats)
 from aircraft_vqa.export import export_records
 from aircraft_vqa.qc import run_qc
@@ -138,6 +139,20 @@ def main() -> int:
 
     records = dedup(records)
     print(f"[dedup] 保留 {len(records)} 条")
+
+    # ---- 类别均衡：压平"类型识别"任务的长尾 ----
+    cls_tasks = cfg.get("class_balance_tasks",
+                        ["classification_open", "classification_mc"])
+    mom = float(cfg.get("class_max_over_min", 3.0))
+    if mom > 0:
+        before = class_distribution(records, cls_tasks)
+        records = cap_class_imbalance(records, cls_tasks, mom,
+                                      seed=cfg.get("seed", 0))
+        after = class_distribution(records, cls_tasks)
+        if before != after:
+            print(f"[class] 类型识别任务类别均衡（最多 ≤ {mom}× 最少）")
+            print(f"        前 {before}")
+            print(f"        后 {after}")
 
     # ---- 质检 ----
     records, report = run_qc(records, check_image=args.check_images)

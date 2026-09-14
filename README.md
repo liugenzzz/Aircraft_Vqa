@@ -12,6 +12,10 @@
 本期缺陷范围 **8 类**：紧固件缺失 / 紧固件松动 / **螺纹损伤** / **裂纹(critical)**
 / 腐蚀锈蚀 / 凹坑 / 划伤 / 漆层剥落。
 
+任务配比按验收指标排（缺陷识别准确率 ≥90%、异常类别识别准确率 ≥88%，
+以及局部结构视觉聚焦与语义定位），见
+[docs/02_pipeline.md 第 6 节](docs/02_pipeline.md)。
+
 ## 快速开始
 
 ```bash
@@ -88,7 +92,8 @@ data/vqa/
 configs/
   datasets.yaml     数据源清单（含授权与下载方式）
   taxonomy.yaml     缺陷本体：14 类缺陷 + 对象 + 严重度 + 维修处置建议
-  build.yaml        构建配置：缺陷范围(8类)、坐标模式、任务配比、平衡策略
+  build.yaml        构建配置：缺陷范围(8类)、坐标模式、按指标排的任务配比、
+                    正负与类别双重平衡
 src/aircraft_vqa/
   schema.py         统一中间表示 UnifiedSample
   taxonomy.py       类别名归一化
@@ -102,7 +107,7 @@ scripts/
   download/         download_all（一站式取数 + 手动清单）、各数据集单独脚本
   ingest / build_vqa / visualize / make_demo_data
   gen_question_bank 大模型扩写问法（一次性离线跑，强制指令式）
-tests/              47 个回归测试
+tests/              49 个回归测试
 ```
 
 ## 授权提醒

@@ -91,6 +91,8 @@ MVTec AD / LOCO 是 CC BY-NC-SA 4.0。用 `--commercial-only` 可以一键排除
 - [ ] train/val/test 无图片级重叠（`group_split` 保证，可用 sample_id 交集复核）
 - [ ] 若要商业交付：`commercial_ok` 全为 True
 - [ ] 8 类缺陷每类样本数 ≥ 300（`stats.json` 的 `by_defect_type`）
+- [ ] 正负样本 1:1（二分类指标的前提，偏了指标就失真）
+- [ ] 类型识别任务里最多类 ≤ 3× 最少类（宏平均指标的前提）
 - [ ] 多轮条目里，正常图那一轮的框输出确实是 `[]`
 - [ ] 启用了问法扩写的话，抽查 20 条：应为规范的指令式书面中文，
       不含口语语气词，术语不堆砌

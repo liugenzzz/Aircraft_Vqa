@@ -26,26 +26,38 @@ active_defect_types:
 question_bank: configs/question_bank.json
 
 # 样本层平衡：每 1 张异常图保留多少张正常图（<=0 不限制）
+# 1.0 即正负 1:1 —— "缺陷识别准确率"是在这个先验下测的，改了指标就不可比
 normal_per_anomalous: 1.0
 
+# 类别均衡：类型识别任务里，最多的缺陷类不超过最少类的多少倍（<=0 不启用）
+# "异常类别识别准确率"按宏平均算时，长尾类样本太少会直接把指标拖下来
+class_max_over_min: 3.0
+class_balance_tasks: [classification_open, classification_mc]
+
 # 问答层目标配比（会自动归一化；供给不足时缺口按权重重分配）
+# 配比对标两项验收指标：
+#   缺陷识别准确率 >= 90%  -> discrimination + multi_turn 第一轮
+#   异常类别识别准确率 >= 88% -> classification_open + classification_mc
+# 以及"局部结构视觉聚焦与语义定位"这项功能要求 -> grounding / referring / region_word
 task_ratio:
-  # ---- 缺陷定位 55% ----
-  grounding_single: 0.20
-  grounding_all: 0.15
-  grounding_negative: 0.10     # 正常图答空列表，抑制幻觉的关键，别删
-  referring_region: 0.06
+  # ---- 缺陷识别（对标 >=90%）16% ----
+  discrimination: 0.16
+  # ---- 异常类别识别（对标 >=88%）20% ----
+  classification_open: 0.11
+  classification_mc: 0.09
+  # ---- 视觉聚焦与语义定位 46% ----
+  grounding_single: 0.16
+  grounding_all: 0.12
+  grounding_negative: 0.09     # 正常图答空列表，抑制幻觉的关键，别删
+  referring_region: 0.05       # 给框问该区域 —— 直接对应"局部结构聚焦"
+  region_word: 0.02            # 方位词 —— 对应"语义定位"
   counting: 0.02
-  region_word: 0.02
-  # ---- 多轮追问 8%（有无 -> 定位 -> 处置，复刻机务问诊流程）----
+  # ---- 多轮追问 8%（第一轮也计入缺陷识别指标）----
   multi_turn: 0.08
-  # ---- 缺陷识别 ----
-  discrimination: 0.07
-  classification_open: 0.08
-  classification_mc: 0.07
-  description: 0.10
-  severity_action: 0.05
-  object_recognition: 0.02
+  # ---- 辅助能力 10% ----
+  description: 0.06
+  severity_action: 0.03
+  object_recognition: 0.01
 
 # 单张图最多被采纳的问答数（在 task_ratio 之后再限一次）
 split_ratios: [0.95, 0.03, 0.02]
