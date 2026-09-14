@@ -98,8 +98,10 @@ SOURCES = [
     {
         "name": "npu_bolt",
         "mode": "keyed",
+        "rec": "暂不建议 —— 标的是螺栓这个物体，不是缺陷",
         "zh": "NPU-BOLT（337 图，自然场景螺栓 4 类）",
-        "use": "自然背景下的螺栓检测与指代定位，补 MVTec 白底摆拍的短板",
+        "use": "只适合做计数与指代定位；现有 coco adapter 会把每颗正常螺栓"
+               "当成一处缺陷，需要单独写 adapter",
         "dest": "NPU-BOLT",
         "probe": "train/_annotations.coco.json",
         "size": "约 200 MB",
@@ -154,7 +156,7 @@ SOURCES = [
     },
     {
         "name": "corrosion_cs_vt",
-        "mode": "manual",
+        "mode": "auto",
         "zh": "Virginia Tech 腐蚀分级分割集（440 图 / 4 级）",
         "use": "★ 唯一带'锈蚀严重度分级 + 像素定位'的公开集",
         "dest": "corrosion_cs",
@@ -162,12 +164,21 @@ SOURCES = [
         "size": "约 300 MB",
         "license": "学术开放，商用需确认",
         "page": "https://data.lib.vt.edu/articles/dataset/Corrosion_Condition_State_Semantic_Segmentation_Dataset/16624663",
+        "url": "https://data.lib.vt.edu/ndownloader/articles/16624663/versions/1",
+        "archive": "corrosion_cs.zip",
+        "note": "figshare 的直链模式（ndownloader）没在本仓库验证过；"
+                "下不动就按下面的步骤走浏览器，效果一样。",
         "steps": [
-            "在上面的 figshare 页点 Download all，拿到 zip",
-            "解压后把原图目录改名为 images/、标注 mask 目录改名为 masks/",
+            "在上面的页面点 Download all，拿到 zip（完全公开，不用填表）",
+            "解压后把原图目录改名为 images/、标注 mask 目录改名为 masks/，"
             "最终形如 {full_dest}/images/*.jpg 与 {full_dest}/masks/*.png",
-            "mask 像素值即等级；configs/datasets.yaml 里 class_map 已按 "
-            "{{1: fair, 2: poor, 3: severe}} 配好，若实际取值不同照着改",
+            "核对 mask 的像素取值："
+            "python scripts/inspect_masks.py --masks {full_dest}/masks",
+            "把实际取值填进 configs/datasets.yaml 里 corrosion_cs_vt 的 class_map。"
+            "该条目已设 grade_type: corrosion —— good/fair/poor/severe 会被当作"
+            "腐蚀的**有序等级**，映射成程度词（轻微锈蚀/点蚀起皮/层状剥落/截面损失）"
+            "并直接决定严重度与处置方案",
+            "等级顺序弄反了比没有等级更糟，务必用 scripts/visualize.py 抽查几张核对",
         ],
         "config_key": "corrosion_cs_vt",
         "config_names": ["corrosion_cs_vt"],
@@ -175,54 +186,83 @@ SOURCES = [
     {
         "name": "real_iad",
         "mode": "manual",
-        "zh": "Real-IAD（150K 图 / 30 类 / 每件 5 视角）",
-        "use": "规模最大，多视角能训练'换个角度再确认'的局部聚焦能力",
+        "rec": "建议（取 512 + 几个类即可，别下全量）",
+        "zh": "Real-IAD（151,050 图 / 30 类 / 每件 5 视角）",
+        "use": "★ 每个视角单独标注 —— 缺陷看不见的那个角度标签就是 good，"
+               "'换角度确认'这件事的监督信号是现成的",
         "dest": "Real-IAD",
         "probe": "realiad_jsons",
-        "size": "约 200 GB（可只取部分类别）",
-        "license": "需签署协议申请",
-        "page": "https://realiad4ad.github.io/Real-IAD/",
+        "size": "raw 全量 200GB；取 512 版 + 5 个类只要几 GB",
+        "license": "CC BY-NC-SA 4.0 —— 禁止商用（与 MVTec 同）",
+        "page": "https://huggingface.co/Real-IAD",
         "steps": [
-            "在项目页提交申请并签署使用协议，等待作者发放下载链接",
-            "下载后解压，保证有 {full_dest}/realiad_jsons/*.json "
-            "与图片目录 {full_dest}/realiad_1024/",
-            "体量很大，建议只取金属紧固/机加类的若干 category",
+            "注册 HuggingFace 账号，到组织页 Real-IAD 申请访问："
+            "填姓名/单位/用途并同意 CC BY-NC-SA 4.0；部分仓库人工审核，可能等一两天",
+            "**按分辨率和物体分包，不要下 realiad_raw**："
+            "先拿 realiad_512（或 256）里三五个金属/紧固类物体的 ZIP，几 GB 就能起步",
+            "元数据包 realiad_jsons 必须一起下（另有 _sv 单视角、_fuiad 含噪设定两套变体，"
+            "先用基础版）",
+            "解压成 {full_dest}/realiad_jsons/*.json 与 {full_dest}/realiad_512/<类名>/",
+            "在 configs/datasets.yaml 的 real_iad 条目里把 image_dir 改成 realiad_512，"
+            "并用 categories 限定你实际下了的那几个类",
         ],
+        "note": "训练集 36,465 张纯正常图，测试集 114,585 张混合。"
+                "同一物体不同视角标签不同，这正是'单视角结论不可靠'的天然监督。"
+                "另有 Real-IAD D³（CVPR 2025，RGB + 光度立体 + 微米级点云），"
+                "后续想走多模态可以看。",
         "config_key": "real_iad",
         "config_names": ["real_iad"],
     },
     {
         "name": "aircraft_fuselage_det2023",
         "mode": "manual",
+        "rec": "推荐（航空域真实数据，别的集给不了）",
         "zh": "Aircraft_Fuselage_DET2023（5,601 图机身缺陷）",
-        "use": "多光照实拍机身缺陷，航空域外观补充",
+        "use": "★ 不同光照下实拍机身不同部位的四类表面缺陷，"
+               "外加一个无标注池可做半监督",
         "dest": "roboflow/aircraft_fuselage_det2023",
         "probe": "train",
         "size": "未公布",
-        "license": "IEEE DataPort 条款",
+        "license": "IEEE DataPort 条款；引用需写作者那篇半监督论文",
         "page": "https://ieee-dataport.org/documents/aircraftfuselagedet2023-aircraft-fuselage-defect-detection-dataset",
         "steps": [
-            "登录 IEEE DataPort（部分条目需订阅）后下载",
-            "整理成 COCO 或 YOLO 目录结构放到 {full_dest}",
-            "在 configs/datasets.yaml 里新增一个 adapter: coco 的条目指向它",
+            "IEEE DataPort 的条目分开放获取与订阅者专享两种，登录后才看得到按钮。"
+            "多数高校图书馆有 IEEE 机构订阅 —— 走校园网 IP 或图书馆远程访问"
+            "（VPN / CARSI）进去试；卡住就直接问图书馆的电子资源咨询，比自己折腾快",
+            "下载包里是一个 Aircraft_Fuselage_DET2023 文件夹，"
+            "前三个子目录是同一批图的 COCO / VOC / YOLO 三种标注，第四个是无标注图像池",
+            "**用 COCO 那份**，整理成 {full_dest}/train|valid|test/_annotations.coco.json；"
+            "无标注池先放一边（要做半监督或自训练时再用，作者刻意留的）",
+            "在 configs/datasets.yaml 里照着 aircraft_skin_defects 条目新增一个"
+            " adapter: coco 的条目指向 {full_dest}",
+            "引用写《A Semi-Supervised Aircraft Fuselage Defect Detection Network with "
+            "Dynamic Attention and Class-aware Adaptive Pseudo-Label Assignment》，"
+            "页面上明确要求",
         ],
         "config_key": "（需自行新增条目）",
     },
     {
         "name": "bolt_rotation",
         "mode": "manual",
-        "zh": "Bolt Rotation Dataset（1,100+ 图，带转角标注）",
-        "use": "公开数据里唯一能量化'松动'的来源",
+        "rec": "暂不建议 —— 单一装置 + 实验室光照，视觉域迁不过去",
+        "zh": "Bolt Rotation Dataset（1,112 图，带转角标注）",
+        "use": "价值在标签不在图像：公开数据里唯一把松动量化成连续角度的",
         "dest": "bolt_rotation",
         "probe": "images",
         "size": "约 500 MB",
-        "license": "Data in Brief 开放数据",
+        "license": "Data in Brief 开放获取（DOI 10.1016/j.dib.2025.111788）",
         "page": "https://www.sciencedirect.com/science/article/pii/S2352340925005153",
+        "note": "自制装置上五颗 M20 螺栓、三颗逐步逆时针旋转，单反 + 四个焦距、"
+                "多机位，实验室受控光照。跟 MVTec 是同一类短板：视觉域几乎迁不到"
+                "真实航空场景。只适合当'松动是连续量而非二值状态'的概念监督源，"
+                "别指望拿它训出能用的检测器 —— 合成特写场景已经能覆盖松动的外观。",
         "steps": [
-            "从论文的 Data Availability 段落进到数据仓库（Mendeley Data）下载",
+            "**务必从论文的 Data Availability 一节点链接过去**：同一批作者在 Figshare 上"
+            "还有一个名字很像的《A dataset depicting simulated bolt rotation》（9.88 GB，"
+            "是仿真的），直接搜名字容易拿错。要的是实拍那 1,112 张",
             "解压到 {full_dest}",
-            "转角标注是 CSV，需要写一个小 adapter 把角度阈值映射成"
-            " fastener_loose；本仓库暂未提供，属于后续工作",
+            "转角标注是 CSV，需要写一个 adapter 把角度阈值映射成 fastener_loose；"
+            "本仓库暂未提供",
         ],
         "config_key": "（需自行新增条目 + adapter）",
     },
@@ -310,7 +350,17 @@ def do_auto(root: str, src: dict, keep: bool) -> bool:
         return False
     if not keep:
         os.remove(archive)
-    return _present(root, src)
+    if _present(root, src):
+        return True
+    # 压缩包里的目录结构和 adapter 期望的对不上，说清楚差在哪，别只报一个失败
+    print(f"  解压完成，但没找到期望的 {src['probe']}")
+    try:
+        top = sorted(os.listdir(dest))[:12]
+        print(f"  解压出来的顶层内容：{top}")
+    except OSError:
+        pass
+    print(f"  需要整理成：{os.path.join(dest, src['probe'])}")
+    return False
 
 
 def do_local(root: str, src: dict, n_synth: int) -> bool:
@@ -366,6 +416,7 @@ def write_manual_manifest(root: str, srcs: list, out_path: str) -> None:
         lines += [
             f"## {s['zh']}",
             "",
+            f"- **建议**：{s.get('rec', '推荐')}",
             f"- **用途**：{s['use']}",
             f"- **体量**：{s.get('size', '未知')}",
             f"- **授权**：{s['license']}",
@@ -416,13 +467,14 @@ def enable_in_config(config_path: str, names: list) -> list:
 
 def print_table(root: str, srcs: list) -> None:
     print("\n" + _pad("数据集", 40) + _pad("获取方式", 12)
-          + _pad("状态", 8) + _pad("体量", 18) + "用途")
-    print("-" * 130)
+          + _pad("状态", 8) + _pad("体量", 18) + _pad("建议", 34) + "用途")
+    print("-" * 160)
     for s in srcs:
         ok = _present(root, s)
         print(_pad(s["zh"], 40) + _pad(MODE_ZH[s["mode"]], 12)
               + _pad("已有" if ok else "缺", 8)
-              + _pad(s.get("size", "-"), 18) + _pad(s["use"], 56))
+              + _pad(s.get("size", "-"), 18)
+              + _pad(s.get("rec", "推荐"), 34) + _pad(s["use"], 60))
 
 
 # ---------------------------------------------------------------- main
@@ -473,6 +525,10 @@ def main() -> int:
 
         if s["mode"] == "auto":
             ok = do_auto(root, s, args.keep_archive)
+            if not ok and s.get("steps"):
+                print("  自动下载没成功，转为人工获取")
+                manual.append(s)
+                continue
         elif s["mode"] == "local":
             ok = do_local(root, s, args.n_synth)
         elif s["mode"] == "keyed":

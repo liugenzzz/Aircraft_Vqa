@@ -538,3 +538,86 @@ def test_roboflow_error_messages_are_actionable():
     e404 = urllib.error.HTTPError("u", 404, "x", {}, io.BytesIO(b""))
     assert "Private API Key" in rf._explain(e401, "ws", "proj")
     assert "--list-versions" in rf._explain(e404, "ws", "proj")
+
+
+# ------------------------------------------------------------------ 有序分级
+def test_grade_taxonomy_is_ordered():
+    order = TAX.grade_order("corrosion")
+    assert order == ["good", "fair", "poor", "severe"]
+    ranks = [TAX.grade_rank("corrosion", g) for g in order]
+    assert ranks == sorted(ranks)
+    # 等级越高严重度不降
+    sev_order = ["minor", "major", "critical"]
+    idx = [sev_order.index(TAX.grade_info("corrosion", g)["severity"]) for g in order]
+    assert idx == sorted(idx)
+    assert TAX.grade_zh("corrosion", "severe") == "截面损失"
+    assert TAX.has_grades("corrosion") and not TAX.has_grades("crack")
+    assert TAX.grade_info("corrosion", "不存在的等级") == {}
+
+
+def _corrosion_adapter(tmp_path, grade_type="corrosion"):
+    import numpy as _np
+    from aircraft_vqa.adapters import build_adapter
+    (tmp_path / "images").mkdir()
+    (tmp_path / "masks").mkdir()
+    for i, v in enumerate([1, 2, 3, 4]):
+        Image.new("RGB", (128, 128), (120, 120, 120)).save(
+            tmp_path / "images" / f"i{i}.png")
+        m = _np.zeros((128, 128), _np.uint8)
+        m[30:90, 30:90] = v
+        Image.fromarray(m).save(tmp_path / "masks" / f"i{i}.png")
+    spec = {"adapter": "mask_seg", "root": str(tmp_path), "name": "corr",
+            "license": "x", "commercial_ok": False, "category": "metal_part",
+            "images_dir": "images", "masks_dir": "masks",
+            "background_values": [0],
+            "class_map": {1: "good", 2: "fair", 3: "poor", 4: "severe"}}
+    if grade_type:
+        spec["grade_type"] = grade_type
+    return build_adapter(spec, taxonomy=TAX)
+
+
+def test_mask_seg_reads_grades_and_severity(tmp_path):
+    got = {}
+    for s in _corrosion_adapter(tmp_path).iter_samples():
+        d = s.defects[0]
+        got[d.grade] = (d.type, d.severity)
+    assert set(got) == {"good", "fair", "poor", "severe"}
+    assert all(t == "corrosion" for t, _ in got.values())
+    # 严重度由等级给出，不再按面积估
+    assert got["good"][1] == "minor"
+    assert got["severe"][1] == "critical"
+
+
+def test_grade_type_required_for_good_level(tmp_path):
+    """不声明 grade_type 时 'good' 不能被当成腐蚀等级 —— 它在 MVTec 里是'正常'。"""
+    for s in _corrosion_adapter(tmp_path, grade_type=None).iter_samples():
+        d = s.defects[0]
+        if d.type_raw == "good":
+            assert d.grade == ""
+            assert d.type != "corrosion"
+
+
+def test_grade_assessment_answer_uses_level_wording(tmp_path):
+    cfg = BuildConfig(max_qa_per_sample=12, active_defect_types=["corrosion"])
+    cfg.task_weights = dict(cfg.task_weights, grade_assessment=1.0)
+    b = VQABuilder(cfg, TAX)
+    seen = {}
+    for s in _corrosion_adapter(tmp_path).iter_samples():
+        for r in b.build(s):
+            if r["task"] == "grade_assessment":
+                seen[r["grade"]] = r
+                assert check_record(r) == []
+    assert len(seen) == 4
+    assert "截面损失" in seen["severe"]["answer"]
+    assert "轻微锈蚀" in seen["good"]["answer"]
+    # 等级不同，处置建议必须不同，否则分级就白做了
+    actions = {r["answer"].rsplit("处置建议：", 1)[-1] for r in seen.values()}
+    assert len(actions) == 4
+
+
+def test_ungraded_defect_produces_no_grade_task(tmp_path):
+    cfg = BuildConfig(max_qa_per_sample=12)
+    cfg.task_weights = dict(cfg.task_weights, grade_assessment=1.0)
+    b = VQABuilder(cfg, TAX)
+    tasks = {r["task"] for r in b.build(_sample(tmp_path, "anomalous", "crack"))}
+    assert "grade_assessment" not in tasks

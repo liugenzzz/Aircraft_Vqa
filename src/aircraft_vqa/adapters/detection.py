@@ -133,8 +133,17 @@ class YoloAdapter(BaseAdapter):
 class MaskSegAdapter(BaseAdapter):
     """语义分割式数据（腐蚀分级等）：图像目录 + 同名 mask 目录。
 
-    mask 像素值即类别索引，由 `class_map` 给出 {像素值: 类别名}；
-    腐蚀集常见 {0: background, 1: fair, 2: poor, 3: severe}。
+    mask 像素值即类别索引，由 `class_map` 给出 {像素值: 类别名}。
+
+    若该数据集给的是**同一种缺陷的有序等级**（VT 腐蚀集的
+    good/fair/poor/severe 就是），用 `grade_type` 指明这些名字是哪种缺陷的等级：
+
+        grade_type: corrosion
+        class_map: {1: good, 2: fair, 3: poor, 4: severe}
+
+    这样等级会写进 Defect.grade，严重度由等级给出而不是按面积估。
+    不这么声明的话，"good" 这种词会被当成普通类别名去查别名表 ——
+    而 "good" 在 MVTec 系里是"正常"的意思，撞车了会出错，所以必须显式声明。
     """
 
     name = "mask_seg"
@@ -147,6 +156,7 @@ class MaskSegAdapter(BaseAdapter):
         img_dir = os.path.join(self.root, self.opts.get("images_dir", "images"))
         mask_dir = os.path.join(self.root, self.opts.get("masks_dir", "masks"))
         class_map = {int(k): v for k, v in (self.opts.get("class_map") or {}).items()}
+        grade_type = self.opts.get("grade_type") or ""
         bg = set(self.opts.get("background_values", [0]))
         cat_name = self.opts.get("category") or os.path.basename(self.root)
         split = self.opts.get("split", "train")
@@ -170,13 +180,23 @@ class MaskSegAdapter(BaseAdapter):
             if m is not None:
                 for val in sorted(set(np.unique(m)) - bg):
                     raw = class_map.get(int(val), f"class_{int(val)}")
-                    ct = self.tax.map_defect(raw)
+                    if grade_type:
+                        # 显式声明了是某种缺陷的有序等级
+                        ct, grade = grade_type, raw
+                    else:
+                        ct = self.tax.map_defect(raw)
+                        grade = raw if self.tax.grade_info(ct, raw) else ""
+                    if grade and not self.tax.grade_info(ct, grade):
+                        grade = ""          # 等级名不在本体里，按普通缺陷处理
                     for b in connected_boxes(m == val):
                         ar = bbox_area_ratio(b, w, h)
+                        sev = (self.tax.grade_info(ct, grade).get("severity")
+                               if grade else
+                               severity_from_area(self.tax.default_severity(ct), ar))
                         defects.append(Defect(
                             type=ct, type_raw=raw, type_zh=self.tax.zh(ct), bbox=b,
                             area_ratio=round(ar, 6), region=region_word(b, w, h),
-                            severity=severity_from_area(self.tax.default_severity(ct), ar)))
+                            grade=grade, severity=sev))
             s = self.make_sample(
                 sample_id=f"{self.name}/{cat_name}/{split}/{stem}",
                 image_path=path, label="anomalous" if defects else "normal",

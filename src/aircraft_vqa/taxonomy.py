@@ -27,6 +27,7 @@ class Taxonomy:
         with open(path or _DEFAULT, encoding="utf-8") as f:
             self.raw = yaml.safe_load(f)
         self.defect_types: dict = self.raw["defect_types"]
+        self.grades: dict = self.raw.get("grades", {})
         self.objects: dict = self.raw["objects"]
         self.severity: dict = self.raw["severity"]
 
@@ -86,6 +87,25 @@ class Taxonomy:
         g = self.group(defect_type)
         return [t for t in self.defect_types
                 if t != defect_type and self.group(t) == g]
+
+    # ---- 有序程度分级 ---------------------------------------------
+    def grade_info(self, defect_type: str, grade: str) -> dict:
+        """等级明细；该类型没有分级体系或等级不认识时返回空字典。"""
+        spec = self.grades.get(defect_type) or {}
+        return (spec.get("levels") or {}).get(grade, {})
+
+    def grade_zh(self, defect_type: str, grade: str) -> str:
+        return self.grade_info(defect_type, grade).get("zh", "")
+
+    def grade_order(self, defect_type: str) -> list:
+        return (self.grades.get(defect_type) or {}).get("order", [])
+
+    def has_grades(self, defect_type: str) -> bool:
+        return bool(self.grades.get(defect_type))
+
+    def grade_rank(self, defect_type: str, grade: str) -> int:
+        order = self.grade_order(defect_type)
+        return order.index(grade) if grade in order else -1
 
     # ---- 对象 -----------------------------------------------------
     def map_object(self, raw_name: str) -> str:

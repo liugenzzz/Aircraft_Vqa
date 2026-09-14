@@ -22,6 +22,7 @@ class Defect:
     bbox: Optional[BBox] = None    # 绝对像素坐标
     area_ratio: float = 0.0        # 缺陷面积 / 整图面积
     severity: str = "major"
+    grade: str = ""                # 有序程度标签（如腐蚀的 good/fair/poor/severe）
     region: str = ""               # 九宫格方位词，如 "左上"
     polygon: Optional[list] = None  # 可选轮廓点 [[x,y], ...]
     score: float = 1.0             # 标注置信度（合成/伪标注时 < 1）

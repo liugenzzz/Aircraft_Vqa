@@ -168,6 +168,24 @@ NEGATIVE_ASPECTS = [
 ]
 
 
+# ---------------------------------------------------------------- 分级
+
+Q_GRADE = [
+    "请判断图中{defect}的程度等级。",
+    "该{obj}上的{defect}发展到什么程度了？请给出等级判定。",
+    "请按腐蚀状态标准评定图中{defect}的等级，并说明判定依据。",
+    "请评定该处{defect}的严重等级。",
+]
+
+A_GRADE = (
+    "等级判定：{grade_zh}。\n"
+    "判定依据：{grade_desc}；位于画面{region}，范围{size}。\n"
+    "严重程度：{severity}。处置建议：{action}"
+)
+
+A_GRADE_SHORT = "{grade_zh}（{severity}）。{grade_desc}"
+
+
 # ---------------------------------------------------------------- 多轮
 
 # 机务实际的问法是追问式的：先问有没有问题，再问在哪，最后问怎么处理。
@@ -211,6 +229,7 @@ QUESTIONS = {
     "severity_action": Q_SEVERITY,
     "object_recognition": Q_OBJECT,
     "multi_turn": Q_MT_T1,
+    "grade_assessment": Q_GRADE,
 }
 
 # 每个任务允许出现的占位符 —— 扩写出来的问法只要用了池外的占位符，
@@ -228,8 +247,10 @@ ALLOWED_PLACEHOLDERS = {
     "severity_action": {"obj", "ctx"},
     "object_recognition": {"obj", "ctx"},
     "multi_turn": {"obj", "ctx"},
+    "grade_assessment": {"defect", "obj", "ctx"},
 }
 REQUIRED_PLACEHOLDERS = {
+    "grade_assessment": {"defect"},
     "grounding_single": {"defect"},      # 不点名缺陷类型就没法"单目标定位"
     "referring_region": {"box"},         # 不给框就不成其为"区域指代"
     "region_word": {"defect"},

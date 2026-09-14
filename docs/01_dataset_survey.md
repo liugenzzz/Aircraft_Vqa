@@ -35,8 +35,10 @@
 - 链接：https://universe.roboflow.com/university-of-technology-sydney-21uto/aircraft-defect-detection
 
 ### A3. `Aircraft_Fuselage_DET2023`（IEEE DataPort）★★★★
-- 规模：**5,601 张**机身缺陷，4 类，多光照环境实拍
-- 获取：IEEE DataPort，需账号（部分条目对订阅者开放）
+- 规模：**5,601 张**，4 类机身表面缺陷，相机在不同光照环境下拍机身不同部位 —— 这正是 MVTec 这类摆拍数据给不了的
+- 包内结构：一个 `Aircraft_Fuselage_DET2023` 文件夹，前三个子目录是同一批图的 **COCO / VOC / YOLO** 三种标注，第四个是**无标注图像池**。无标注部分不是凑数 —— 原论文做的就是半监督（动态注意力 + 类别自适应伪标签分配），作者刻意留的，想做半监督或自训练可以直接用
+- 获取门槛：IEEE DataPort 的条目分开放获取与订阅者专享两种，**登录后才看得到按钮**。多数高校图书馆有 IEEE 机构订阅，走校园网 IP 或图书馆远程访问（VPN / CARSI）进去多半能直接下；卡住就问图书馆的电子资源咨询
+- 引用要求：页面明确要求引作者那篇《A Semi-Supervised Aircraft Fuselage Defect Detection Network with Dynamic Attention and Class-aware Adaptive Pseudo-Label Assignment》
 - 链接：https://ieee-dataport.org/documents/aircraftfuselagedet2023-aircraft-fuselage-defect-detection-dataset
 
 ### A4. Roboflow 主题检索（补充长尾）
@@ -65,22 +67,30 @@
 - 授权：**CC BY-NC-SA 4.0（禁止商用）**
 - 链接：https://www.mvtec.com/company/research/datasets/mvtec-loco
 
-### B3. NPU-BOLT ★★★
+### B3. NPU-BOLT ★★ —— 需另写 adapter
 - 规模：337 张自然场景螺栓图；4 类：`blur bolt` / `bolt head` / `bolt nut` / `bolt side`
-- 价值：自然背景下的**螺栓检测与指代定位**（"左起第三颗螺栓"），补 MVTec 白底摆拍的短板
+- 价值：自然背景下的**螺栓检测与指代定位**（"左起第三颗螺栓"）、计数，补 MVTec 白底摆拍的短板
+- **注意**：它标的是"螺栓这个物体"，不是缺陷。直接走 `adapter: coco` 会把**每一颗正常螺栓都当成一处缺陷**。要用必须单独写个把框当对象框而非缺陷框的 adapter，本仓库暂未提供，所以 `enabled: false`
 - 获取：Kaggle 公开
 - 链接：https://arxiv.org/pdf/2205.11191
 
-### B4. Bolt Rotation Dataset（Data in Brief, 2025）★★★★
-- 规模：1,100+ 张，实验室受控拍摄，**标注了螺栓旋转角度偏差**、相机角度、焦距、高度
-- **价值**：公开数据里**唯一能量化"松动 (looseness)"**的来源 —— 松动在视觉上就是相对初始标记的转角偏差。可生成"该螺栓相对基准转动了约 N 度，判定为松动"的问答。
-- 链接：https://www.sciencedirect.com/science/article/pii/S2352340925005153
+### B4. Bolt Rotation Dataset（Data in Brief, 2025）★★ —— 暂不建议接入
+- 规模：**1,112 张**实拍。自制装置上五颗 M20 螺栓、其中三颗逐步逆时针旋转，三脚架 + 单反、四个焦距、多个机位，每个旋转角度都有精确测量值
+- **取数有坑**：同一批作者在 Figshare 上还有一个名字很像的《A dataset depicting simulated bolt rotation》（9.88 GB，仿真的）。**务必从论文 Data Availability 一节点链接过去**，直接搜名字容易拿错
+- **价值在标签不在图像**：公开数据里确实找不到第二个把"松动程度"量化成连续角度的
+- **但不建议现在接**：单一装置、实验室受控光照 —— 跟 MVTec 是同一类短板，视觉域几乎迁不到真实航空场景。本仓库的合成特写场景已经能覆盖松动的外观（`loose_fastener`，螺栓外凸 + 投影拉长）。只有当需要教模型"松动是连续量而非二值状态"这个概念时才值得接，而且必须配合 NPU-BOLT 这类真实背景做域适应，论文里也得这么写清定位，否则一眼看出是拿实验室数据充实景
+- DOI: 10.1016/j.dib.2025.111788
 
-### B5. Real-IAD ★★★★
-- 规模：**150K 张**（99,721 正常 / 51,329 异常），30 类工业件（金属/塑料/木/陶瓷），**每件 5 个视角**，2K~5K 超高分辨率，**像素级 mask + 图像级 + 样本级三层标注**
-- 价值：① 规模最大；② **多视角** → 训练"对局部结构的视觉聚焦"与"换个角度再确认"的能力；③ 含大量金属机加/紧固类零件
-- 获取：需在官方页面**签署协议申请**
-- 链接：https://arxiv.org/abs/2403.12580
+### B5. Real-IAD ★★★★★
+- 规模：**151,050 张**（训练集 36,465 张纯正常，测试集 114,585 张混合），30 类工业件，**每件 5 个视角**，像素级 mask + 图像级 + 样本级三层标注
+- **最大价值在于按视角单独标注**：同一个有缺陷的物体，从看不见缺陷的那个角度拍的那张图，**标签本身就是 `good`**。也就是说"单视角结论不可靠、必须换角度确认"这件事，数据里天然编码好了监督信号，不用自己造 —— 这正对项目里"对局部结构的视觉聚焦"这项要求。
+  V-AUROC（单视角）与 S-AUROC（五视角聚合取最大）的差值，就是量化这个能力最直接的证据。
+- 获取：**HuggingFace 组织页 `Real-IAD`**，需账号 + 同意条款（填姓名/单位/用途），部分仓库人工审核，可能等一两天
+- **体量别被 200GB 吓到**：按分辨率分包（`realiad_256/512/1024/raw`）+ 按物体一个 ZIP。取 512 版加三五个金属/紧固类，几 GB 就能起步。元数据另有 `realiad_jsons`（基础）、`_sv`（单视角）、`_fuiad`（含噪训练的 FUIAD 设定）三套
+- 授权：**CC BY-NC-SA 4.0，禁止商用**（与 MVTec 同）
+- 现成 loader：anomalib 有 `RealIAD(root=..., category=..., resolution=...)` 的 datamodule
+- 延伸：**Real-IAD D³**（CVPR 2025），20 类连接器件，RGB + 光度立体伪 3D + 微米级点云，后续想走多模态可以看
+- 链接：https://huggingface.co/Real-IAD ，论文 https://arxiv.org/abs/2403.12580
 
 ### B6. MPDD（Metal Parts Defect Detection）★★★
 - 金属喷漆零件，6 类，像素 mask，多光照/多角度/多距离拍摄 → 金属反光鲁棒性

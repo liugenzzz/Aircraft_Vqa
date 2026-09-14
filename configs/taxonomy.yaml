@@ -144,6 +144,37 @@ objects:
   metal_part:   {zh: 金属零件, role: structure, aircraft_ctx: 金属结构件}
   unknown:      {zh: 待检部件, role: unknown,  aircraft_ctx: 待检部件}
 
+# 有序程度分级。
+# 有些数据集给的不是"有/无"而是**有序的程度标签**（VT 腐蚀集的
+# good/fair/poor/severe 就是按 AASHTO 与桥梁检查员手册标的），
+# 把它们塌成一个"腐蚀锈蚀"等于把最有价值的信息扔了。
+# 这里把等级映射成自然语言的程度词 + 对应的严重度与处置方案，
+# 构建器会优先采用等级给出的严重度，而不是按面积占比估。
+grades:
+  corrosion:
+    order: [good, fair, poor, severe]
+    levels:
+      good:
+        zh: 轻微锈蚀
+        severity: minor
+        desc: 涂层基本完整，表面可见零星锈点，未见起皮
+        action: 清洁表面并做好记录，按计划监控发展
+      fair:
+        zh: 点蚀起皮
+        severity: major
+        desc: 锈层起皮，基材出现明显点蚀坑
+        action: 除锈至金属基材，测量点蚀深度后补涂防腐底漆
+      poor:
+        zh: 层状剥落
+        severity: major
+        desc: 呈层状剥蚀，锈层成片脱落，基材受蚀范围扩大
+        action: 机械除锈并评估剩余壁厚，按 SRM 判定是否需要补强
+      severe:
+        zh: 截面损失
+        severity: critical
+        desc: 腐蚀已造成可测量的截面损失，承载能力下降
+        action: 立即停用该区域，测量剩余截面并按 SRM 制定换件或补强方案
+
 # 严重度
 severity:
   minor:    {zh: 轻微, en: minor,    desc: 不影响适航，监控并按计划处理}

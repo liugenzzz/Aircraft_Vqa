@@ -83,10 +83,18 @@ datasets:
     root: "{data_root}/Real-IAD"
     enabled: false
     priority: 2
-    license: "需签署协议"
+    license: "CC BY-NC-SA 4.0 —— 禁止商用"
     commercial_ok: false
-    url: https://arxiv.org/abs/2403.12580
-    notes: "150K 图 / 30 类 / 每件 5 视角，训练'换个角度再确认'的多视角聚焦能力。"
+    url: https://huggingface.co/Real-IAD
+    # 按分辨率分包：realiad_256 / _512 / _1024 / _raw。别下 raw（200GB），
+    # 取 512 加三五个金属/紧固类物体，几 GB 就够起步。
+    image_dir: realiad_512
+    json_dir: realiad_jsons
+    # 只用你实际下了的那几个类，置空则全用
+    # categories: [audiojack, bolt, screw, toy_brick]
+    notes: "每个视角单独标注 —— 同一个有缺陷的物体，从看不见缺陷的角度拍的那张，
+      标签就是 good。'单视角结论不可靠、要换角度确认'这件事的监督信号是现成的，
+      不用自己造，正对'局部结构视觉聚焦'这项要求。"
 
   # ---------------- 航空域（决定最终域表现，建议过采样） ----------------
   - name: aircraft_skin_defects
@@ -129,9 +137,15 @@ datasets:
     category: metal_part
     images_dir: images
     masks_dir: masks
-    class_map: {1: fair, 2: poor, 3: severe}
+    # 这四个名字不是四种缺陷，而是「腐蚀」这一种缺陷的**有序等级**
+    # （AASHTO / 桥梁检查员手册的腐蚀状态标准），所以用 grade_type 显式声明。
+    # 等级会映射成程度词（轻微锈蚀/点蚀起皮/层状剥落/截面损失）并决定严重度。
+    grade_type: corrosion
+    # !! 下面的像素值需要你按实际 mask 核对，不同发布版本取值可能不同：
+    #    python scripts/inspect_masks.py --masks ~/data/raw/corrosion_cs/masks
+    class_map: {1: good, 2: fair, 3: poor, 4: severe}
     background_values: [0]
-    notes: "4 级腐蚀像素分割，支撑'锈蚀到什么程度/怎么处理'的问答。"
+    notes: "4 级腐蚀像素分割，支撑'锈蚀到什么程度 / 怎么处理'的分级问答。"
 
   # ---------------- 螺栓 ----------------
   - name: npu_bolt

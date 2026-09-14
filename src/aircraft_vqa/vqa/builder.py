@@ -30,6 +30,7 @@ LOCALIZATION_TASKS = ("grounding_single", "grounding_all", "grounding_negative",
 RECOGNITION_TASKS = ("discrimination", "classification_open", "classification_mc",
                      "description", "severity_action", "object_recognition")
 DIALOG_TASKS = ("multi_turn",)
+GRADING_TASKS = ("grade_assessment",)
 
 
 @dataclass
@@ -53,6 +54,7 @@ class BuildConfig:
         "severity_action": 0.6,
         "object_recognition": 0.25,
         "multi_turn": 0.5,
+        "grade_assessment": 0.9,   # 只有带有序等级的源才可能触发，权重给高些
     })
     enable_tasks: Optional[list] = None   # None = 全开
     n_options: int = 4
@@ -239,6 +241,8 @@ class VQABuilder:
             out.append(("object_recognition", lambda: self._t_object(s, rng)))
         if self._enabled("multi_turn"):
             out.append(("multi_turn", lambda: self._t_multi_turn(s, rng, loc)))
+        if any(d.grade for d in s.defects) and self._enabled("grade_assessment"):
+            out.append(("grade_assessment", lambda: self._t_grade(s, rng)))
         return out
 
     # ---------------------------------------------------------- 正常样本
@@ -348,8 +352,11 @@ class VQABuilder:
     def _t_classify_open(self, s, rng) -> dict:
         t = s.defect_types[0]
         d = next((x for x in s.defects if x.type == t), s.defects[0])
+        info = self.tax.grade_info(t, d.grade) if d.grade else {}
         evidence = ""
-        if d.region:
+        if info:
+            evidence = f"程度为{info['zh']}：{info['desc']}。"
+        elif d.region:
             evidence = f"依据是画面{d.region}处可见相应特征，范围{size_word(d.area_ratio)}。"
         q = self._pick_q("classification_open", rng, **self._ctx(s))
         a = rng.choice(T.A_CLASSIFY_OPEN).format(
@@ -371,7 +378,10 @@ class VQABuilder:
             items = []
             for d in s.defects[:6]:
                 seg = f"画面{d.region or '中部'}的{self.tax.zh(d.type)}"
-                if d.area_ratio:
+                info = self.tax.grade_info(d.type, d.grade) if d.grade else {}
+                if info:
+                    seg += f"（{info['zh']}）"
+                elif d.area_ratio:
                     seg += f"（{size_word(d.area_ratio)}）"
                 items.append(seg)
             worst = max(s.defects, key=lambda d: ["minor", "major", "critical"].index(
@@ -386,15 +396,44 @@ class VQABuilder:
         return self._rec(s, "description", "recognition", q, a, T.SYSTEM_PROMPT)
 
     def _t_severity(self, s, rng) -> dict:
-        d = max(s.defects, key=lambda x: x.area_ratio)
+        d = self._graded(s) or max(s.defects, key=lambda x: x.area_ratio)
+        info = self.tax.grade_info(d.type, d.grade) if d.grade else {}
+        name = self.tax.zh(d.type)
+        if info:
+            name = f"{name}（{info['zh']}）"
         q = self._pick_q("severity_action", rng, **self._ctx(s))
         a = T.A_SEVERITY.format(
             severity=self.tax.severity_zh(d.severity),
             severity_desc=self.tax.severity_desc(d.severity),
-            defect=self.tax.zh(d.type), region=d.region or "中部",
-            size=size_word(d.area_ratio), action=self.tax.action(d.type))
+            defect=name, region=d.region or "中部",
+            size=size_word(d.area_ratio),
+            action=info.get("action") or self.tax.action(d.type))
         return self._rec(s, "severity_action", "recognition", q, a, T.SYSTEM_PROMPT,
                          {"severity": d.severity, "target_type": d.type})
+
+    def _graded(self, s) -> Optional[object]:
+        """取等级最高（最严重）的那处缺陷；没有分级标注则返回 None。"""
+        graded = [d for d in s.defects if d.grade]
+        if not graded:
+            return None
+        return max(graded, key=lambda d: self.tax.grade_rank(d.type, d.grade))
+
+    def _t_grade(self, s, rng) -> dict:
+        d = self._graded(s)
+        if d is None:
+            return None
+        info = self.tax.grade_info(d.type, d.grade)
+        q = self._pick_q("grade_assessment", rng, defect=self.tax.zh(d.type),
+                         **self._ctx(s))
+        a = T.A_GRADE.format(
+            grade_zh=info.get("zh", d.grade), grade_desc=info.get("desc", ""),
+            region=d.region or "中部", size=size_word(d.area_ratio),
+            severity=self.tax.severity_zh(d.severity),
+            action=info.get("action") or self.tax.action(d.type))
+        return self._rec(s, "grade_assessment", "recognition", q, a,
+                         T.SYSTEM_PROMPT,
+                         {"grade": d.grade, "target_type": d.type,
+                          "grade_rank": self.tax.grade_rank(d.type, d.grade)})
 
     def _t_multi_turn(self, s, rng, loc) -> dict:
         """有无 -> 定位 -> 处置 的三轮追问，复刻机务实际问诊流程。"""
