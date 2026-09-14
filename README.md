@@ -17,9 +17,12 @@
 ```bash
 pip install -r requirements.txt
 
-# 1) 拿数据：VisA 免申请直下（CC BY 4.0），合成数据本地生成
-bash scripts/download/download_visa.sh ~/data/raw
-python scripts/make_demo_data.py --out ~/data/raw/synthetic -n 4000
+# 1) 一站式取数：能自动下的直接下，不能自动下的生成待办清单
+python scripts/download/download_all.py --data-root ~/data/raw
+#    有 Roboflow / Kaggle 凭据的话一起设上，这两家也会自动下：
+#    export ROBOFLOW_API_KEY=xxx；~/.kaggle/kaggle.json
+python scripts/download/download_all.py --data-root ~/data/raw --list   # 只看清单
+python scripts/download/download_all.py --data-root ~/data/raw --check  # 手动下完体检
 
 # 1.5) 可选：用大模型把问法扩写一轮（一次性，十几次调用）
 python scripts/gen_question_bank.py --dry-run          # 先看 prompt
@@ -29,7 +32,8 @@ python scripts/gen_question_bank.py --per-task 25      # 需要 LLM_API_KEY
 python scripts/ingest.py --data-root ~/data/raw --out data/interim
 
 # 3) 构建 VQA（含平衡、质检、切分、导出）
-python scripts/build_vqa.py --interim data/interim --out data/vqa
+python scripts/build_vqa.py --interim data/interim --out data/vqa \
+    --mix-general path/to/general_sft.jsonl --mix-ratio 0.08   # 防语言层退化
 
 # 4) 人工抽检（必做）
 python scripts/visualize.py --vqa data/vqa/train.raw.jsonl -n 40 --out data/vis
@@ -94,9 +98,11 @@ src/aircraft_vqa/
   export/           LLaMA-Factory / ms-swift / OpenAI 三种导出格式
   balance.py        两层平衡、分组切分、配比达成度
   qc.py             13 项自动质检
-scripts/            download/ ingest / build_vqa / visualize / make_demo_data
-                    gen_question_bank（大模型扩写问法，一次性离线跑）
-tests/              40 个回归测试
+scripts/
+  download/         download_all（一站式取数 + 手动清单）、各数据集单独脚本
+  ingest / build_vqa / visualize / make_demo_data
+  gen_question_bank 大模型扩写问法（一次性离线跑，强制指令式）
+tests/              47 个回归测试
 ```
 
 ## 授权提醒

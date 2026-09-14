@@ -27,6 +27,42 @@ from aircraft_vqa.vqa import BuildConfig, VQABuilder
 from aircraft_vqa.vqa.llm import load_rewriter
 
 
+def _mix_general(train_path: str, general_path: str, ratio: float,
+                 seed: int) -> None:
+    """把通用指令数据按比例混进 train 导出文件。
+
+    窄领域 SFT 最常见的副作用是语言层退化：模型答专业题很准，
+    但一聊别的就生硬、爱省略。按 5~10% 混入通用指令数据是最省事的解法，
+    比反复调问法风格有效得多。
+    """
+    import random as _r
+    if not os.path.exists(general_path):
+        print(f"[mix] 找不到通用数据 {general_path}，跳过")
+        return
+    if not (0 < ratio < 0.5):
+        print(f"[mix] mix_ratio={ratio} 不在 (0, 0.5) 内，跳过")
+        return
+    with open(train_path, encoding="utf-8") as f:
+        ours = [l for l in f if l.strip()]
+    with open(general_path, encoding="utf-8") as f:
+        pool = [l for l in f if l.strip()]
+    if not pool:
+        print(f"[mix] {general_path} 是空的，跳过")
+        return
+    want = int(len(ours) * ratio / (1 - ratio))
+    rng = _r.Random(seed)
+    picked = (rng.sample(pool, want) if want <= len(pool)
+              else [rng.choice(pool) for _ in range(want)])
+    if want > len(pool):
+        print(f"[mix] 通用数据只有 {len(pool)} 条，需要 {want} 条，将重复采样")
+    merged = ours + picked
+    rng.shuffle(merged)
+    with open(train_path, "w", encoding="utf-8") as f:
+        f.writelines(merged)
+    print(f"[mix] 混入通用数据 {len(picked)} 条，train 共 {len(merged)} 条"
+          f"（通用占比 {len(picked) / len(merged):.1%}）")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--interim", default="data/interim")
@@ -41,6 +77,11 @@ def main() -> int:
     ap.add_argument("--check-images", action="store_true",
                     help="质检时逐条确认图片存在（慢但稳）")
     ap.add_argument("--llm-rewrite", action="store_true", help="启用大模型改写层")
+    ap.add_argument("--mix-general", default=None,
+                    help="通用指令数据 jsonl（已是导出格式），按比例混进 train，"
+                         "防止窄领域微调把模型的语言层带偏")
+    ap.add_argument("--mix-ratio", type=float, default=0.08,
+                    help="通用数据在 train 中的占比，建议 0.05~0.10")
     ap.add_argument("--ratio-strict", action="store_true",
                     help="严格服从 task_ratio（会按最稀缺任务缩量，数据量小很多）")
     args = ap.parse_args()
@@ -157,6 +198,11 @@ def main() -> int:
                            relative=exp.get("relative_paths", False))
         n_total += n
         print(f"[export] {name}: {n} 条 -> {args.out}/{name}.{fmt}.jsonl")
+
+    # ---- 可选：混入通用指令数据 ----
+    if args.mix_general:
+        _mix_general(os.path.join(args.out, f"train.{fmt}.jsonl"),
+                     args.mix_general, args.mix_ratio, cfg.get("seed", 0))
 
     st = stats(records)
     with open(os.path.join(args.out, "stats.json"), "w", encoding="utf-8") as f:

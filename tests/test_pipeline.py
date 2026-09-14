@@ -356,3 +356,105 @@ def test_synthetic_boxes_inside_image():
                 assert x >= 0 and y >= 0
                 assert x + w <= img.width and y + h <= img.height
                 assert w > 0 and h > 0
+
+
+# ------------------------------------------------------------------ 问法风格
+def _load_script(name):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        name.replace(".", "_"),
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                     "scripts", name))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def test_instruction_style_rejects_colloquial():
+    gqb = _load_script("gen_question_bank.py")
+    assert gqb.validate("description", "把这个{obj}瞅一下呗。", set())
+    assert gqb.validate("description", "整一下{obj}的情况", set())
+    # 无结尾标点 = 碎片
+    assert gqb.validate("description", "描述一下这个{obj}的状况", set())
+    # 行话堆砌
+    assert gqb.validate("description", "按 AMM 和 SRM 的适航要求描述{obj}。", set())
+    # 合格的指令式
+    assert gqb.validate("description", "请描述该{obj}的外观状况。", set()) == ""
+
+
+def test_loose_style_only_checks_placeholders():
+    gqb = _load_script("gen_question_bank.py")
+    q = "把这个{obj}瞅一下呗"
+    assert gqb.validate("description", q, set(), style="loose") == ""
+    assert gqb.validate("description", q, set(), style="instruction")
+
+
+def test_seed_templates_are_not_colloquial():
+    """种子问法自己也得守规矩，否则扩写出来的会跟着跑偏。"""
+    gqb = _load_script("gen_question_bank.py")
+    from aircraft_vqa.vqa import templates as TT
+    pools = list(TT.QUESTIONS.values()) + [
+        TT.Q_MT_T2_POS, TT.Q_MT_T2_NEG, TT.Q_MT_T3_POS, TT.Q_MT_T3_NEG]
+    for pool in pools:
+        for q in pool:
+            if q.isascii():          # 英文问法不走中文口语规则
+                continue
+            for w in gqb.COLLOQUIAL:
+                assert w not in q, f"种子问法口语化：{q}"
+
+
+# ------------------------------------------------------------------ 通用数据混入
+def test_mix_general_hits_target_ratio(tmp_path):
+    bv = _load_script("build_vqa.py")
+    train = tmp_path / "train.jsonl"
+    train.write_text("\n".join(f'{{"i": {i}}}' for i in range(900)) + "\n",
+                     encoding="utf-8")
+    gen = tmp_path / "general.jsonl"
+    gen.write_text("\n".join(f'{{"g": {i}}}' for i in range(500)) + "\n",
+                   encoding="utf-8")
+    bv._mix_general(str(train), str(gen), 0.10, seed=0)
+    lines = [l for l in train.read_text(encoding="utf-8").splitlines() if l.strip()]
+    n_gen = sum('"g"' in l for l in lines)
+    assert abs(n_gen / len(lines) - 0.10) < 0.01
+
+
+def test_mix_general_skips_bad_input(tmp_path):
+    bv = _load_script("build_vqa.py")
+    train = tmp_path / "train.jsonl"
+    train.write_text('{"i": 1}\n', encoding="utf-8")
+    bv._mix_general(str(train), str(tmp_path / "nope.jsonl"), 0.1, 0)
+    assert train.read_text(encoding="utf-8") == '{"i": 1}\n'   # 原样不动
+    gen = tmp_path / "g.jsonl"
+    gen.write_text('{"g": 1}\n', encoding="utf-8")
+    bv._mix_general(str(train), str(gen), 0.9, 0)              # 比例不合理
+    assert train.read_text(encoding="utf-8") == '{"i": 1}\n'
+
+
+# ------------------------------------------------------------------ 下载器
+def test_download_registry_is_consistent():
+    da = _load_script(os.path.join("download", "download_all.py"))
+    names = [s["name"] for s in da.SOURCES]
+    assert len(names) == len(set(names))
+    for s in da.SOURCES:
+        assert s["mode"] in da.MODE_ZH
+        for k in ("zh", "use", "dest", "probe", "license"):
+            assert s.get(k), f"{s['name']} 缺字段 {k}"
+        if s["mode"] == "manual":
+            assert s.get("steps") and s.get("page"), f"{s['name']} 缺手动步骤"
+        if s["mode"] == "auto":
+            assert s.get("url") and s.get("archive")
+        if s["mode"] == "keyed":
+            assert s.get("env") and s.get("env_how")
+
+
+def test_manual_manifest_lists_paths_and_steps(tmp_path):
+    da = _load_script(os.path.join("download", "download_all.py"))
+    manual = [s for s in da.SOURCES if s["mode"] == "manual"]
+    out = tmp_path / "MANUAL.md"
+    da.write_manual_manifest(str(tmp_path), manual, str(out))
+    text = out.read_text(encoding="utf-8")
+    for s in manual:
+        assert s["zh"] in text
+        assert s["page"] in text
+        assert os.path.join(str(tmp_path), s["dest"]) in text
+    assert "{full_dest}" not in text          # 占位符必须都被替换掉
