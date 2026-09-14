@@ -207,8 +207,8 @@ SOURCES = [
         "zh": "Aircraft_Fuselage_DET2023（5,601 图机身缺陷）",
         "use": "★ 不同光照下实拍机身不同部位的四类表面缺陷，"
                "外加一个无标注池可做半监督",
-        "dest": "roboflow/aircraft_fuselage_det2023",
-        "probe": "train",
+        "dest": "Aircraft_Fuselage_DET2023",
+        "probe": "train/_annotations.coco.json",
         "size": "未公布",
         "license": "IEEE DataPort 条款；引用需写作者那篇半监督论文",
         "page": "https://ieee-dataport.org/documents/aircraftfuselagedet2023-aircraft-fuselage-defect-detection-dataset",
@@ -220,8 +220,8 @@ SOURCES = [
             "前三个子目录是同一批图的 COCO / VOC / YOLO 三种标注，第四个是无标注图像池",
             "**用 COCO 那份**，整理成 {full_dest}/train|valid|test/_annotations.coco.json；"
             "无标注池先放一边（要做半监督或自训练时再用，作者刻意留的）",
-            "在 configs/datasets.yaml 里照着 aircraft_skin_defects 条目新增一个"
-            " adapter: coco 的条目指向 {full_dest}",
+            "configs/datasets.yaml 里已经预置好 aircraft_fuselage_det2023 条目"
+            "（enabled: false），文件放对位置后跑 --check --enable-config 会自动打开",
             "引用写《A Semi-Supervised Aircraft Fuselage Defect Detection Network with "
             "Dynamic Attention and Class-aware Adaptive Pseudo-Label Assignment》，"
             "页面上明确要求",

@@ -129,6 +129,22 @@ datasets:
       fuselage: fuselage
     notes: "9352 张，目前能拿到的最大航空缺陷检测集。"
 
+  - name: aircraft_fuselage_det2023
+    adapter: coco
+    root: "{data_root}/Aircraft_Fuselage_DET2023"
+    enabled: false
+    priority: 1
+    license: "IEEE DataPort 条款；引用需写作者那篇半监督论文"
+    commercial_ok: false
+    url: https://ieee-dataport.org/documents/aircraftfuselagedet2023-aircraft-fuselage-defect-detection-dataset
+    category: fuselage
+    object_hint:
+      fuselage: fuselage
+    splits: [train, valid, test]
+    notes: "5,601 张，不同光照下实拍机身不同部位的四类表面缺陷。
+      包内前三个子目录是同一批图的 COCO / VOC / YOLO 三种标注，用 COCO 那份；
+      第四个是无标注池，做半监督或自训练时再用（作者刻意留的）。"
+
   # ---------------- 锈蚀分级 ----------------
   - name: corrosion_cs_vt
     adapter: mask_seg
