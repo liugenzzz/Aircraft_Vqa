@@ -7,6 +7,9 @@ version: 1
 defect_types:
 
   fastener_missing:
+    # 离散事件型缺陷：缺一颗螺丝、一道裂纹，面积必然很小，
+    # 但严重度跟面积无关。禁止按面积占比上下浮动。
+    area_scales_severity: false
     zh: 紧固件缺失
     en: missing fastener
     group: fastener            # 紧固件族（螺丝/螺栓/铆钉）
@@ -17,6 +20,9 @@ defect_types:
     action: 补装同规格紧固件并按扭矩值复紧，检查孔位是否扩孔或撕裂
 
   fastener_loose:
+    # 离散事件型缺陷：缺一颗螺丝、一道裂纹，面积必然很小，
+    # 但严重度跟面积无关。禁止按面积占比上下浮动。
+    area_scales_severity: false
     zh: 紧固件松动
     en: loose fastener
     group: fastener
@@ -26,6 +32,9 @@ defect_types:
     action: 按 AMM 规定扭矩复紧，复紧后做防松标记线
 
   thread_damage:
+    # 离散事件型缺陷：缺一颗螺丝、一道裂纹，面积必然很小，
+    # 但严重度跟面积无关。禁止按面积占比上下浮动。
+    area_scales_severity: false
     zh: 螺纹损伤
     en: thread damage
     group: fastener
@@ -35,6 +44,9 @@ defect_types:
     action: 更换紧固件，检查配合螺孔螺纹是否同步损伤
 
   fastener_wrong_spec:
+    # 离散事件型缺陷：缺一颗螺丝、一道裂纹，面积必然很小，
+    # 但严重度跟面积无关。禁止按面积占比上下浮动。
+    area_scales_severity: false
     zh: 紧固件规格不符
     en: wrong fastener specification
     group: fastener
@@ -53,6 +65,9 @@ defect_types:
     action: 按 SRM 打磨除锈并评估剩余厚度，补涂防腐底漆
 
   crack:
+    # 离散事件型缺陷：缺一颗螺丝、一道裂纹，面积必然很小，
+    # 但严重度跟面积无关。禁止按面积占比上下浮动。
+    area_scales_severity: false
     zh: 裂纹
     en: crack
     group: structure
@@ -87,6 +102,9 @@ defect_types:
     action: 清理松动漆层，按涂装规范补漆，防止下方基材腐蚀
 
   breakage:
+    # 离散事件型缺陷：缺一颗螺丝、一道裂纹，面积必然很小，
+    # 但严重度跟面积无关。禁止按面积占比上下浮动。
+    area_scales_severity: false
     zh: 断裂破损
     en: breakage
     group: structure
@@ -105,6 +123,9 @@ defect_types:
     action: 清洁并溯源渗漏点，确认非液压/燃油渗漏
 
   misalignment:
+    # 离散事件型缺陷：缺一颗螺丝、一道裂纹，面积必然很小，
+    # 但严重度跟面积无关。禁止按面积占比上下浮动。
+    area_scales_severity: false
     zh: 错位不齐
     en: misalignment
     group: structure
@@ -114,6 +135,9 @@ defect_types:
     action: 按图纸复位并重新紧固，检查孔位偏差
 
   extra_part:
+    # 离散事件型缺陷：缺一颗螺丝、一道裂纹，面积必然很小，
+    # 但严重度跟面积无关。禁止按面积占比上下浮动。
+    area_scales_severity: false
     zh: 多余件
     en: extra / redundant part
     group: structure

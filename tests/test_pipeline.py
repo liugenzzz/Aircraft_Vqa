@@ -753,3 +753,48 @@ def test_resolve_keeps_primary_when_none_exist(tmp_path):
     spec = ing.resolve({"name": "m", "root": "{data_root}/primary",
                         "root_alternatives": ["{data_root}/other"]}, str(tmp_path))
     assert spec["root"].endswith("primary")     # 报错信息里给主路径
+
+
+# ------------------------------------------------------------------ 极性与严重度
+def test_discrimination_answers_have_no_bare_yes_no():
+    """问法池里"是否合格"和"有没有异常"极性相反，答案不能出现裸的是/否。"""
+    from aircraft_vqa.vqa import templates as TT
+    for a in TT.A_DISCRIMINATION_POS + TT.A_DISCRIMINATION_NEG:
+        assert not a.startswith(("是，", "是。", "否，", "否。")), a
+
+
+def test_discrete_defects_keep_declared_severity(tmp_path):
+    """缺一颗螺丝、一道裂纹，面积必然很小，严重度不能被面积调低。"""
+    import json as _json
+    from aircraft_vqa.adapters import build_adapter
+    (tmp_path / "train").mkdir()
+    Image.new("RGB", (1000, 1000), (120, 120, 120)).save(
+        tmp_path / "train" / "a.jpg")
+    ann = {"images": [{"id": 0, "file_name": "a.jpg", "width": 1000,
+                       "height": 1000}],
+           "categories": [{"id": 1, "name": "missing_fastener"},
+                          {"id": 2, "name": "crack"},
+                          {"id": 3, "name": "paint_peel_off"}],
+           "annotations": [
+               {"id": 1, "image_id": 0, "category_id": 1,
+                "bbox": [10, 10, 12, 12], "area": 144, "iscrowd": 0},
+               {"id": 2, "image_id": 0, "category_id": 2,
+                "bbox": [50, 50, 14, 14], "area": 196, "iscrowd": 0},
+               {"id": 3, "image_id": 0, "category_id": 3,
+                "bbox": [100, 100, 15, 15], "area": 225, "iscrowd": 0}]}
+    (tmp_path / "train" / "_annotations.coco.json").write_text(
+        _json.dumps(ann), encoding="utf-8")
+    ad = build_adapter({"adapter": "coco", "root": str(tmp_path), "name": "t",
+                        "license": "x", "commercial_ok": True,
+                        "category": "panel", "splits": ["train"]}, taxonomy=TAX)
+    sev = {d.type: d.severity for s in ad.iter_samples() for d in s.defects}
+    assert sev["fastener_missing"] == "major"      # 不因面积小被降成 minor
+    assert sev["crack"] == "critical"
+    assert sev["paint_peeling"] == "minor"         # 面状缺陷仍可按面积浮动
+
+
+def test_area_still_scales_area_type_defects():
+    from aircraft_vqa.geometry import severity_from_area
+    assert TAX.area_scales_severity("corrosion")
+    assert severity_from_area("major", 0.20) == "critical"   # 大面积升档
+    assert not TAX.area_scales_severity("fastener_missing")

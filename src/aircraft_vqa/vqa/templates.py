@@ -55,12 +55,12 @@ Q_REGION_YESNO = [
 ]
 
 A_REGION_POSITIVE = [
-    "是。{box} 区域内存在{defect}，位于画面{region}，缺陷范围{size}。",
-    "该区域存在异常：{defect}（{region}，{size}），建议按{severity}等级处理。",
+    "{box} 区域内存在{defect}，位于画面{region}，缺陷范围{size}。",
+    "该区域存在异常：{defect}（{region}，{size}），严重程度判定为{severity}。",
 ]
 
 A_REGION_NEGATIVE = [
-    "否。{box} 区域内未见异常，该处{obj}表面完好。",
+    "{box} 区域内未见异常，该处{obj}表面完好。",
     "该区域未发现缺陷，外观正常。",
 ]
 
@@ -89,16 +89,19 @@ Q_DISCRIMINATION = [
     "请判断该{obj}是否存在需要记录的缺陷。",
 ]
 
+# 注意：问法池里"是否合格"和"有没有异常"极性相反，答案里**不能出现
+# 裸的"是/否"**，否则"是否合格 -> 是，存在缺陷"会被读成"合格"。
+# 所有答案一律用"存在异常 / 未见异常 / 不合格 / 检查合格"这类自带语义的表述。
 A_DISCRIMINATION_POS = [
     "存在异常。可见{defect_list}，位于画面{region}。",
     "不合格。该{obj}上发现{defect_list}，需要记录并进一步评估。",
-    "是，存在缺陷：{defect_list}（{region}）。",
+    "该{obj}存在缺陷：{defect_list}（{region}），本项检查不通过。",
 ]
 
 A_DISCRIMINATION_NEG = [
     "未发现异常。该{obj}表面完好，紧固件齐全，无锈蚀、裂纹或明显损伤。",
-    "合格。外观检查未见缺陷。",
-    "否，本图未见异常。",
+    "检查合格，外观未见缺陷。",
+    "该{obj}未见异常，本项检查通过。",
 ]
 
 Q_CLASSIFY_OPEN = [

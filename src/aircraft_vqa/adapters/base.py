@@ -68,6 +68,12 @@ class BaseAdapter:
             return self.object_hint[category]
         return self.tax.map_object(category)
 
+    def _severity(self, canon: str, area_ratio: float) -> str:
+        base = self.tax.default_severity(canon)
+        if not self.tax.area_scales_severity(canon):
+            return base
+        return severity_from_area(base, area_ratio)
+
     def make_sample(self, *, sample_id: str, image_path: str, label: str,
                     category: str, split: str, mask_path: Optional[str] = None,
                     raw_defect: str = "", boxes: Optional[list] = None,
@@ -101,9 +107,9 @@ class BaseAdapter:
                 ct = self.tax.map_defect(lb)
                 ar = bbox_area_ratio(b, w, h)
                 s.defects.append(Defect(
-                    type=ct, type_raw=str(lb), type_zh=self.tax.zh(ct), bbox=[int(v) for v in b],
-                    area_ratio=round(ar, 6), region=region_word(b, w, h),
-                    severity=severity_from_area(self.tax.default_severity(ct), ar)))
+                    type=ct, type_raw=str(lb), type_zh=self.tax.zh(ct),
+                    bbox=[int(v) for v in b], area_ratio=round(ar, 6),
+                    region=region_word(b, w, h), severity=self._severity(ct, ar)))
             return s
 
         # 其次用 mask 提连通域
@@ -117,7 +123,7 @@ class BaseAdapter:
                     type=canon_default, type_raw=raw_defect,
                     type_zh=self.tax.zh(canon_default), bbox=b,
                     area_ratio=round(ar, 6), region=region_word(b, w, h),
-                    severity=severity_from_area(self.tax.default_severity(canon_default), ar)))
+                    severity=self._severity(canon_default, ar)))
             if s.defects:
                 s.meta["mask_area_ratio"] = round(total_ar, 6)
                 return s

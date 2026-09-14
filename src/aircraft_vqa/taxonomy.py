@@ -73,6 +73,15 @@ class Taxonomy:
     def default_severity(self, defect_type: str) -> str:
         return self.defect_types.get(defect_type, {}).get("severity_default", "major")
 
+    def area_scales_severity(self, defect_type: str) -> bool:
+        """该缺陷的严重度能否按面积占比浮动。
+
+        面状缺陷（锈蚀、漆层剥落）面积越大越严重，这个成立；
+        离散事件型缺陷（紧固件缺失、裂纹）面积必然很小，按面积调只会调错。
+        """
+        return self.defect_types.get(defect_type, {}).get(
+            "area_scales_severity", True)
+
     def severity_zh(self, sev: str) -> str:
         return self.severity.get(sev, {}).get("zh", sev)
 

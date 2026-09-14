@@ -191,8 +191,7 @@ class MaskSegAdapter(BaseAdapter):
                     for b in connected_boxes(m == val):
                         ar = bbox_area_ratio(b, w, h)
                         sev = (self.tax.grade_info(ct, grade).get("severity")
-                               if grade else
-                               severity_from_area(self.tax.default_severity(ct), ar))
+                               if grade else self._severity(ct, ar))
                         defects.append(Defect(
                             type=ct, type_raw=raw, type_zh=self.tax.zh(ct), bbox=b,
                             area_ratio=round(ar, 6), region=region_word(b, w, h),

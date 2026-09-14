@@ -128,6 +128,7 @@ class MVTecLOCOAdapter(BaseAdapter):
             for b in connected_boxes(m > 0):
                 ar = bbox_area_ratio(b, s.width, s.height)
                 out.append(Defect(type=ct, type_raw=raw, type_zh=self.tax.zh(ct), bbox=b,
-                                  area_ratio=round(ar, 6), region=region_word(b, s.width, s.height),
-                                  severity=severity_from_area(self.tax.default_severity(ct), ar)))
+                                  area_ratio=round(ar, 6),
+                                  region=region_word(b, s.width, s.height),
+                                  severity=self._severity(ct, ar)))
         return out
