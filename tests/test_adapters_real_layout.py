@@ -538,3 +538,55 @@ def test_shipped_corrosion_class_map_matches_adapter_reading(tmp_path):
     order = get_taxonomy().grades["corrosion"]["order"]
     got = [e["class_map"][k] for k in sorted(e["class_map"])]
     assert got == [g for g in order if g in got], (got, order)
+
+
+def test_scan_does_not_run_palette_lookup_on_photos(tmp_path, capsys):
+    """扫描阶段判类型不能走 VOC 反查 —— 每张照片都查一遍，又慢又刷屏。"""
+    import numpy as np
+    from PIL import Image
+    arr = _arr()
+    rng = np.random.default_rng(0)
+    photo = tmp_path / "p.jpg"
+    Image.fromarray(rng.integers(0, 255, (256, 256, 3), dtype="uint8")
+                    ).save(photo, quality=95)
+
+    capsys.readouterr()
+    assert arr.looks_like_mask(str(photo)) is False
+    out = capsys.readouterr().out
+    assert "VOC" not in out and "color_map" not in out, out
+
+
+def test_scan_still_recognises_palette_masks(tmp_path):
+    """修完刷屏之后，P 模式 mask 仍然要被认出来。"""
+    arr = _arr()
+    p = tmp_path / "m.png"
+    _voc_p_mask(p, [[0, 1], [2, 3]])
+    assert arr.looks_like_mask(str(p)) is True
+
+
+def test_scan_recognises_grayscale_stored_as_rgb(tmp_path):
+    """三通道相等的灰度标签图也算 mask。"""
+    import numpy as np
+    from PIL import Image
+    arr = _arr()
+    idx = np.array([[0, 1], [2, 3]], dtype="uint8")
+    p = tmp_path / "m.png"
+    Image.fromarray(np.stack([idx] * 3, axis=-1)).save(p)
+    assert arr.looks_like_mask(str(p)) is True
+
+
+def test_load_mask_warns_once_not_per_image(capsys):
+    """同一条警告刷几百遍等于把它藏起来。"""
+    import numpy as np
+    from aircraft_vqa.adapters import base as B
+
+    B._WARNED.clear()
+    rng = np.random.default_rng(0)
+    capsys.readouterr()
+    for _ in range(3):
+        B._rgb_to_index(rng.integers(0, 255, (64, 64, 3)).astype("uint8"))
+    out = capsys.readouterr().out
+    assert out.count("[load_mask]") == 1, out
+    # 颜色多到不可能是标签图时，要指向真正的原因
+    assert "更像是照片" in out, out
+    B._WARNED.clear()

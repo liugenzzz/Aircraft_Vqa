@@ -39,6 +39,20 @@ def _voc_palette(n: int = 256) -> np.ndarray:
     return pal
 
 
+_WARNED: set = set()
+
+
+def _warn_once(key: str, msg: str) -> None:
+    """同一类警告只说一次 —— 几百张图刷同一句话，等于把它藏起来。
+
+    去重按 key 而不是整条消息：消息里带着每张图各自的颜色数，
+    拿整条去重等于没去重。
+    """
+    if key not in _WARNED:
+        _WARNED.add(key)
+        print(msg)
+
+
 def _rgb_to_index(arr: np.ndarray) -> np.ndarray:
     """彩色 mask -> 类别索引。按 VOC 调色板反查，查不到的按出现顺序兜底。"""
     colors, inv = np.unique(arr.reshape(-1, 3), axis=0, return_inverse=True)
@@ -49,9 +63,18 @@ def _rgb_to_index(arr: np.ndarray) -> np.ndarray:
     if unknown.any():
         # 不是 VOC 配色。按颜色排序兜底给索引，但这个顺序跨图不保证一致，
         # 必须让人看见，不能默默产出一份对不上的标签。
-        print(f"[load_mask] 警告：mask 里有 {int(unknown.sum())} 种颜色不在 VOC "
-              f"调色板里 {[tuple(int(x) for x in c) for c in colors[unknown]][:6]}，"
-              "已按颜色排序临时编号 —— 请显式提供 color_map 再用")
+        n = int(unknown.sum())
+        if n > 256:
+            # 标签图不可能有几百种类别 —— 这多半根本不是 mask，
+            # 而是照片被当成 mask 传进来了。说清楚，别让人去找 color_map。
+            _warn_once("not_a_mask",
+                       f"[load_mask] 这张图有 {n} 种颜色，不像分割 mask，"
+                       "更像是照片被当成 mask 读了 —— 检查 masks_dir 配的是不是原图目录")
+        else:
+            _warn_once("unknown_colors",
+                       f"[load_mask] 警告：mask 里有 {n} 种颜色不在 VOC 调色板里 "
+                       f"{[tuple(int(x) for x in c) for c in colors[unknown]][:6]}，"
+                       "已按颜色排序临时编号 —— 请显式提供 color_map 再用")
         nxt = int(idx.max()) + 1 if (~unknown).any() else 0
         idx[unknown] = np.arange(nxt, nxt + int(unknown.sum()))
     return idx[inv].reshape(arr.shape[:2])

@@ -54,13 +54,32 @@ def looks_like_mask(path: str) -> bool:
     """靠取值个数区分 mask 和照片。
 
     分级图取值就那么几个（等级索引）；照片随便一张都是几万种，不会误判。
-    走 load_mask 而不是自己 convert，保证判据和 adapter 读到的是同一份数据。
+
+    这里刻意**不**走 load_mask：那个函数会对彩色图做 VOC 调色板反查，
+    而扫描阶段每张照片都要过一遍，几万种颜色查下来又慢又刷屏 ——
+    判类型只需要数取值个数，数超了立刻早退。
     """
     try:
-        a = load_mask(path)
+        with Image.open(path) as im:
+            if im.mode == "P":
+                a = np.array(im)
+            elif im.mode in ("L", "1"):
+                im.draft("L", (256, 256))       # JPEG 大图别整张解码
+                a = np.array(im.convert("L"))
+            elif im.mode.startswith("I") or im.mode == "F":
+                a = np.array(im)
+            else:
+                im.draft("RGB", (256, 256))
+                arr = np.array(im.convert("RGB"))
+                if ((arr[..., 0] == arr[..., 1]).all()
+                        and (arr[..., 1] == arr[..., 2]).all()):
+                    a = arr[..., 0]             # 灰度图存成了 RGB
+                else:
+                    cols = np.unique(arr.reshape(-1, 3), axis=0)
+                    return len(cols) <= MASK_MAX_UNIQUE
     except Exception:
         return False
-    return a is not None and len(np.unique(a)) <= MASK_MAX_UNIQUE
+    return len(np.unique(a)) <= MASK_MAX_UNIQUE
 
 
 def classify(d: str, n_probe: int = 8) -> str:
