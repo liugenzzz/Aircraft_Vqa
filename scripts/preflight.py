@@ -102,12 +102,16 @@ def main() -> int:
     data_root = os.path.expanduser(args.data_root)
     limit = args.sample or 10 ** 9
 
-    problems, ok_n = [], 0
+    problems, ok_n, dormant = [], 0, []
     for spec in specs:
         name = spec["name"]
         if args.only and name not in args.only:
             continue
         if not args.only and not args.all and not spec.get("enabled", False):
+            # 数据明明躺在磁盘上却没启用 —— 这是最容易吃闷亏的一种状态：
+            # 体检一路绿灯，然后 ingest 少读一半数据，谁也不会发现。
+            if os.path.exists(resolve(spec, data_root)["root"]):
+                dormant.append(name)
             continue
         spec = resolve(spec, data_root)
         print(f"\n{'=' * 68}\n{name}   [{spec['adapter']}]  {spec['root']}")
@@ -160,11 +164,25 @@ def main() -> int:
                   f"这个源基本只能做定位与有无判定，出不了类型题")
 
     print(f"\n{'=' * 68}\n可用数据源 {ok_n} 个")
+
+    if dormant:
+        print(f"\n⚠ 另有 {len(dormant)} 个源的数据已经在磁盘上，但没启用，"
+              "本次没体检、ingest 也不会读：")
+        for n in dormant:
+            print(f"  · {n}")
+        print("  启用（只探测不下载，写入 configs/datasets.local.yaml）：")
+        print("    python scripts/download/download_all.py "
+              f"--data-root {args.data_root} --check --enable-config")
+
     if problems:
-        print(f"需要处理的问题 {len(problems)} 条：")
+        print(f"\n需要处理的问题 {len(problems)} 条：")
         for p in problems:
             print(f"  · {p}")
         return 1
+    if dormant:
+        # 有数据没接上就不能说"没问题" —— 那正是刚刚踩过的坑
+        print("\n已启用的这几个源没发现问题，但先把上面那些启用了再跑 ingest。")
+        return 0
     print("没有发现问题，可以跑 ingest 了。")
     return 0
 

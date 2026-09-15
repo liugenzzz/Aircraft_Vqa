@@ -553,8 +553,8 @@ def main() -> int:
     ap.add_argument("--n-synth", type=int, default=4000, help="合成数据张数")
     ap.add_argument("--keep-archive", action="store_true", help="解压后保留压缩包")
     ap.add_argument("--enable-config", action="store_true",
-                    help="下好之后自动把 configs/datasets.yaml 里对应条目的 "
-                         "enabled 改成 true")
+                    help="把已就绪的源写进 configs/datasets.local.yaml（不入库）"
+                         "并启用；配合 --check 就是只探测不下载")
     ap.add_argument("--config", default=os.path.join(REPO, "configs", "datasets.yaml"))
     ap.add_argument("--manifest", default=None,
                     help="手动清单输出路径（默认 <data_root>/MANUAL_DOWNLOADS.md）")

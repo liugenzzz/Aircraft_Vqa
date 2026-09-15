@@ -101,3 +101,41 @@ def test_download_all_enable_does_not_touch_tracked_config(tmp_path):
     assert m.enable_in_config(cfg, ["b"]) == ["b"]
     assert io.open(cfg, encoding="utf-8").read() == before
     assert os.path.exists(local_path_for(cfg))
+
+
+def test_preflight_flags_sources_present_but_disabled(tmp_path, capsys):
+    """数据在磁盘上却没启用，是最容易吃闷亏的状态：
+    体检一路绿灯，ingest 少读一半数据，谁也不会发现。必须报出来。"""
+    import importlib.util
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    spec = importlib.util.spec_from_file_location(
+        "preflight", os.path.join(root, "scripts", "preflight.py"))
+    pf = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pf)
+
+    raw = tmp_path / "raw"
+    (raw / "MVTec_AD").mkdir(parents=True)          # 数据在，但配置里是关的
+    cfg = tmp_path / "datasets.yaml"
+    io.open(cfg, "w", encoding="utf-8").write(yaml.safe_dump({
+        "defaults": {"data_root": str(raw)},
+        "datasets": [{"name": "mvtec_ad_screw", "adapter": "mvtec_ad",
+                      "root": str(raw / "MVTec_AD"), "enabled": False},
+                     {"name": "ghost", "adapter": "coco",
+                      "root": str(raw / "NotThere"), "enabled": False}],
+    }, allow_unicode=True, sort_keys=False))
+
+    argv = sys.argv
+    sys.argv = ["preflight", "--config", str(cfg), "--data-root", str(raw)]
+    try:
+        rc = pf.main()
+    finally:
+        sys.argv = argv
+    out = capsys.readouterr().out
+
+    assert "mvtec_ad_screw" in out
+    assert "--check --enable-config" in out, out
+    # 目录都不存在的源不该被算成"已在磁盘上"
+    assert "ghost" not in out, out
+    # 有数据没接上，就不能说"没有发现问题"
+    assert "没有发现问题" not in out, out
+    assert rc == 0
