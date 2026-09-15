@@ -27,6 +27,10 @@ active_defect_types:
   - dent                  # 凹坑
   - scratch               # 划伤
   - paint_peeling         # 漆层剥落
+  # - fastener_damage     # 紧固件损伤（粗粒度）。默认不开：UTS 那批只标了
+  #                       # "Fastener Damage"，没说是滑丝/松动/头部破损，
+  #                       # 开了会和上面三个细类打架。关着它的框照样喂定位，
+  #                       # 只是类型题上降级成"异常"。
 
 # 大模型扩写出的问法库；不存在就只用种子问法，不影响流水线
 question_bank: configs/question_bank.json

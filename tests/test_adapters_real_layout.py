@@ -4,6 +4,7 @@
 这几个 adapter 是照公开文档写的，没跑过真实数据。夹具复刻目录结构、
 命名规则与 mask 组织方式，结构性 bug 在这里暴露，不用等下完 10GB。
 """
+import json
 import os
 import sys
 
@@ -165,3 +166,129 @@ def test_coco_adapter_handles_unannotated_images_as_normal(tmp_path):
     types = {d.type for s in got for d in s.defects}
     assert "fastener_missing" in types      # Missing-head 要映射对
     assert {"crack", "dent", "paint_peeling"} & types
+
+
+# ---------------------------------------------------------------- Roboflow 占位超类
+def test_coco_drops_roboflow_placeholder_supercategory(tmp_path):
+    """Roboflow 导出首位那行占位超类不是缺陷类型，必须丢掉。
+
+    真实踩到的坑：UTS 那份导出里这行叫 "-dents-leaks-ruptures-other"，
+    归一化后子串匹配会认成 dent；aircraft_skin_defects 那行更糟，
+    "CRACK-DENT-ETC-..." 会被认成 crack —— 凭空造出一个 critical 缺陷。
+    """
+    from aircraft_vqa.adapters.detection import CocoAdapter
+    from PIL import Image
+
+    root = tmp_path / "rf"
+    split = root / "train"
+    split.mkdir(parents=True)
+    Image.new("RGB", (64, 64)).save(split / "a.jpg")
+    coco = {
+        "categories": [
+            {"id": 0, "name": "-dents-leaks-ruptures-other", "supercategory": "none"},
+            {"id": 1, "name": "Dent", "supercategory": "-dents-leaks-ruptures-other"},
+        ],
+        "images": [{"id": 1, "file_name": "a.jpg", "width": 64, "height": 64}],
+        "annotations": [
+            {"id": 1, "image_id": 1, "category_id": 0, "bbox": [0, 0, 64, 64]},
+            {"id": 2, "image_id": 1, "category_id": 1, "bbox": [4, 4, 10, 10]},
+        ],
+    }
+    (split / "_annotations.coco.json").write_text(json.dumps(coco), encoding="utf-8")
+
+    samples = list(CocoAdapter(str(root), splits=["train"],
+                                    category="fuselage").iter_samples())
+    assert len(samples) == 1
+    raw = [d.type_raw for d in samples[0].defects]
+    assert raw == ["Dent"], raw
+    assert [d.type for d in samples[0].defects] == ["dent"]
+
+
+def test_coco_keeps_plain_coco_categories(tmp_path):
+    """普通 COCO 没有"超类指回自己"这个结构，不能被误伤。"""
+    from aircraft_vqa.adapters.detection import CocoAdapter
+    from PIL import Image
+
+    root = tmp_path / "plain"
+    split = root / "train"
+    split.mkdir(parents=True)
+    Image.new("RGB", (64, 64)).save(split / "a.jpg")
+    coco = {
+        "categories": [{"id": 1, "name": "crack", "supercategory": "none"}],
+        "images": [{"id": 1, "file_name": "a.jpg", "width": 64, "height": 64}],
+        "annotations": [{"id": 1, "image_id": 1, "category_id": 1,
+                         "bbox": [4, 4, 10, 10]}],
+    }
+    (split / "_annotations.coco.json").write_text(json.dumps(coco), encoding="utf-8")
+    samples = list(CocoAdapter(str(root), splits=["train"],
+                                    category="fuselage").iter_samples())
+    assert [d.type_raw for d in samples[0].defects] == ["crack"]
+
+
+def test_fastener_damage_is_not_other_anomaly():
+    """UTS 的 "Fastener Damage" 曾经落到 other_anomaly，白扔一批紧固件框。"""
+    from aircraft_vqa.taxonomy import get_taxonomy
+    tax = get_taxonomy()
+    assert tax.map_defect("Fastener Damage") == "fastener_damage"
+    assert tax.group("fastener_damage") == "fastener"
+    # 粗粒度兜底类，不能冒充明确的螺纹滑牙
+    assert tax.map_defect("thread_side") == "thread_damage"
+
+
+# ---------------------------------------------------------------- 人工放好的压缩包
+def _dl():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "download_all", os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "scripts", "download", "download_all.py"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def test_unpack_local_extracts_manually_placed_archives(tmp_path):
+    """用户已经把 screw.tar.xz 放进 MVTec_AD/ 了，只是没解压。
+
+    以前只看 probe 路径，会把这种情况报成"还没下"，让人以为要重下一遍。
+    """
+    import tarfile
+    dl = _dl()
+    root = tmp_path
+    dest = root / "MVTec_AD"
+    (dest).mkdir()
+    stage = tmp_path / "stage" / "screw" / "train" / "good"
+    stage.mkdir(parents=True)
+    (stage / "000.png").write_bytes(b"x")
+    with tarfile.open(dest / "screw.tar.xz", "w:xz") as t:
+        t.add(tmp_path / "stage" / "screw", arcname="screw")
+
+    src = {"name": "mvtec_ad", "dest": "MVTec_AD", "probe": "screw/train/good"}
+    assert not dl._present(str(root), src)
+    assert dl.do_unpack_local(str(root), src) is True
+    assert dl._present(str(root), src)
+
+
+def test_unpack_local_reaches_one_level_down(tmp_path):
+    """Real-IAD 的类别包在 realiad_512/ 里，不在 dest 第一层。"""
+    import zipfile
+    dl = _dl()
+    root = tmp_path
+    dest = root / "Real-IAD"
+    (dest / "realiad_512").mkdir(parents=True)
+    with zipfile.ZipFile(dest / "realiad_jsons.zip", "w") as z:
+        z.writestr("realiad_jsons/terminalblock.json", "{}")
+    with zipfile.ZipFile(dest / "realiad_512" / "terminalblock.zip", "w") as z:
+        z.writestr("terminalblock/OK/x.jpg", "x")
+
+    src = {"name": "real_iad", "dest": "Real-IAD", "probe": "realiad_jsons"}
+    assert dl.do_unpack_local(str(root), src) is True
+    assert (dest / "realiad_jsons" / "terminalblock.json").exists()
+    # 类别包必须就地解压，不能倒进 Real-IAD/ 根目录
+    assert (dest / "realiad_512" / "terminalblock" / "OK" / "x.jpg").exists()
+
+
+def test_unpack_local_no_archives_is_false(tmp_path):
+    dl = _dl()
+    (tmp_path / "MVTec_AD").mkdir()
+    assert dl.do_unpack_local(
+        str(tmp_path), {"dest": "MVTec_AD", "probe": "screw/train/good"}) is False

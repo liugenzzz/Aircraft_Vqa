@@ -32,6 +32,21 @@ class CocoAdapter(BaseAdapter):
                 return os.path.join(d, n)
         return None
 
+    @staticmethod
+    def _drop_placeholder_cats(categories: list) -> set:
+        """挑出 Roboflow 导出里那一行占位"超类"。
+
+        Roboflow 的 COCO 导出固定在 categories 首位塞一行
+        {"id": 0, "name": "<项目名>", "supercategory": "none"}，
+        真正的类别都把 supercategory 指向它。这行不是缺陷类型，
+        名字还是几个类名拼起来的（"-dents-leaks-ruptures-other"），
+        一旦有标注引用到它就会被子串匹配错认成 dent。
+        判据取两条同时成立，普通 COCO 不会误伤。
+        """
+        supers = {c.get("supercategory") for c in categories}
+        return {c["id"] for c in categories
+                if c.get("supercategory") == "none" and c.get("name") in supers}
+
     def iter_samples(self) -> Iterator[UnifiedSample]:
         splits = self.opts.get("splits") or ["train", "valid", "val", "test"]
         cat_name = self.opts.get("category") or os.path.basename(self.root)
@@ -45,6 +60,7 @@ class CocoAdapter(BaseAdapter):
             with open(ann_path, encoding="utf-8") as f:
                 coco = json.load(f)
             cats = {c["id"]: c["name"] for c in coco.get("categories", [])}
+            skip_ids = self._drop_placeholder_cats(coco.get("categories", []))
             by_img = defaultdict(list)
             for a in coco.get("annotations", []):
                 by_img[a["image_id"]].append(a)
@@ -55,6 +71,8 @@ class CocoAdapter(BaseAdapter):
                 anns = by_img.get(im["id"], [])
                 boxes, labels = [], []
                 for a in anns:
+                    if a["category_id"] in skip_ids:
+                        continue
                     name = cats.get(a["category_id"], "defect")
                     if name.lower() in ("background", "none", "good", "normal", "ok"):
                         continue

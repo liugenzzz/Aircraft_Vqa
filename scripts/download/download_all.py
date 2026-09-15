@@ -319,6 +319,62 @@ def _extract(archive: str, dest: str) -> bool:
         return False
 
 
+ARCHIVE_EXT = (".tar", ".tar.gz", ".tgz", ".tar.xz", ".zip")
+
+
+def _local_archives(d: str) -> list:
+    """dest 目录里躺着的压缩包，往下找两层。
+
+    两层是因为 Real-IAD 是按"分辨率目录 / 类别.zip"发的：
+    realiad_jsons.zip 在第一层，terminalblock.zip 之类在 realiad_512/ 里。
+    每个包各自就地解压到它所在的目录。
+    """
+    if not os.path.isdir(d):
+        return []
+    out = []
+    for n in sorted(os.listdir(d)):
+        p = os.path.join(d, n)
+        if os.path.isfile(p) and n.endswith(ARCHIVE_EXT):
+            out.append(p)
+        elif os.path.isdir(p):
+            out += [os.path.join(p, m) for m in sorted(os.listdir(p))
+                    if m.endswith(ARCHIVE_EXT)
+                    and os.path.isfile(os.path.join(p, m))]
+    return out
+
+
+def do_unpack_local(root: str, src: dict) -> bool:
+    """人工下好的包已经放进 dest 了，但没解压 —— 替他解掉。
+
+    MVTec 的按类 tar.xz、Real-IAD 的 realiad_jsons.zip 都属于这种：
+    文件在，probe 路径不在，光看 probe 会误报成"还没下"。
+    """
+    dest = os.path.join(root, src["dest"])
+    archives = _local_archives(dest)
+    if not archives:
+        return False
+    print(f"  发现 {len(archives)} 个已下载但没解压的压缩包，正在解压：")
+    ok_any = False
+    for a in archives:
+        here = os.path.dirname(a)          # 就地解压，别把类别包全倒进根目录
+        rel = os.path.relpath(a, dest)
+        print(f"    · {rel} ({_human(os.path.getsize(a))})")
+        if _extract(a, here):
+            ok_any = True
+        else:
+            print("      解压失败，跳过")
+    if not ok_any:
+        return False
+    if _present(root, src):
+        return True
+    # 解开了但层级对不上 —— 把实际长相打出来，别让人对着"失败"猜
+    top = sorted(os.listdir(dest))[:12]
+    print(f"  解压完成，但没找到期望的 {src['probe']}")
+    print(f"  {dest} 当前内容：{top}")
+    print(f"  需要整理成：{os.path.join(dest, src['probe'])}")
+    return False
+
+
 # ---------------------------------------------------------------- 各模式
 def do_auto(root: str, src: dict, keep: bool) -> bool:
     dest = os.path.join(root, src["dest"])
@@ -493,6 +549,10 @@ def main() -> int:
 
         if s["mode"] == "auto":
             ok = do_auto(root, s, args.keep_archive)
+            if not ok and do_unpack_local(root, s):
+                print("  ✅ 本地压缩包已解压完成")
+                done.append(s["name"])
+                continue
             if not ok and s.get("steps"):
                 print("  自动下载没成功，转为人工获取")
                 manual.append(s)
@@ -508,6 +568,10 @@ def main() -> int:
                 continue
             ok = do_roboflow(root, s)
         else:
+            if do_unpack_local(root, s):
+                print("  ✅ 本地压缩包已解压完成")
+                done.append(s["name"])
+                continue
             print(f"  需人工获取：{s['page']}")
             manual.append(s)
             continue

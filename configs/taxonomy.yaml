@@ -55,6 +55,20 @@ defect_types:
               mismatch, wrong_part, swapped]
     action: 按 IPC 件号核对并更换为正确规格
 
+  fastener_damage:
+    # 离散事件型缺陷：缺一颗螺丝、一道裂纹，面积必然很小，
+    # 但严重度跟面积无关。禁止按面积占比上下浮动。
+    area_scales_severity: false
+    zh: 紧固件损伤
+    en: fastener damage
+    group: fastener
+    # 粗粒度兜底类：源数据只说"这颗紧固件坏了"，没说是滑丝、松动还是
+    # 头部破损。不要和 thread_damage 混用 —— 那个是明确的螺纹滑牙。
+    severity_default: major
+    aliases: [fastener_damage, damaged_fastener, fastener_defect, fastener_fault,
+              screw_damage, bolt_damage, rivet_damage, head_damage, damaged_head]
+    action: 按 AMM 判定该紧固件可否继续使用，不满足要求则更换同规格件
+
   corrosion:
     zh: 腐蚀锈蚀
     en: corrosion
