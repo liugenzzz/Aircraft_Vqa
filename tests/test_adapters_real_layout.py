@@ -331,3 +331,108 @@ def test_figshare_api_failure_falls_back(monkeypatch):
 
     monkeypatch.setattr(urllib.request, "urlopen", _boom)
     assert dl._figshare_files("https://x/api/articles/1") == []
+
+
+# ---------------------------------------------------------------- VT 腐蚀集整理
+def _arr():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "arrange_corrosion", os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "scripts", "arrange_corrosion.py"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def _make_corrosion_zip_layout(root, mask_suffix="", variants=("512x512", "original")):
+    """复刻官方 zip 解出来的样子：<长名>/<variant>/<Train|Test>/{images,masks}。"""
+    import numpy as np
+    from PIL import Image
+    rng = np.random.default_rng(0)
+    base = root / "Corrosion Condition State Classification"
+    for v in variants:
+        for split in ("Train", "Test"):
+            pdir = base / v / split / "images"
+            mdir = base / v / split / "masks"
+            pdir.mkdir(parents=True)
+            mdir.mkdir(parents=True)
+            for i in range(4):
+                Image.fromarray(rng.integers(0, 255, (32, 32, 3), dtype="uint8")
+                                ).save(pdir / f"{split.lower()}{i}.jpg")
+                Image.fromarray(rng.integers(0, 5, (32, 32)).astype("uint8")
+                                ).save(mdir / f"{split.lower()}{i}{mask_suffix}.png")
+    return base
+
+
+def test_arrange_corrosion_builds_flat_images_and_masks(tmp_path, capsys):
+    arr = _arr()
+    _make_corrosion_zip_layout(tmp_path)
+    assert arr.main.__module__  # 模块可用
+    import sys as _s
+    argv = _s.argv
+    _s.argv = ["x", "--root", str(tmp_path)]
+    try:
+        assert arr.main() == 0
+    finally:
+        _s.argv = argv
+    imgs = sorted(p.name for p in (tmp_path / "images").iterdir())
+    masks = sorted(p.name for p in (tmp_path / "masks").iterdir())
+    assert len(imgs) == 8 and len(masks) == 8, (imgs, masks)
+    # Train/Test 同名文件平铺后不能互相覆盖
+    assert any(n.startswith("train_") for n in imgs)
+    assert any(n.startswith("test_") for n in imgs)
+    # 默认取 512x512 那一份
+    assert "512x512" in os.readlink(str(tmp_path / "images" / imgs[0]))
+
+
+def test_arrange_corrosion_output_is_readable_by_adapter(tmp_path):
+    """整理完必须能被 mask_seg adapter 直接读出带等级的缺陷。"""
+    arr = _arr()
+    _make_corrosion_zip_layout(tmp_path)
+    import sys as _s
+    argv = _s.argv
+    _s.argv = ["x", "--root", str(tmp_path)]
+    try:
+        assert arr.main() == 0
+    finally:
+        _s.argv = argv
+
+    samples = _run({"name": "corrosion_cs_vt", "adapter": "mask_seg",
+                    "root": str(tmp_path), "category": "metal_part",
+                    "grade_type": "corrosion",
+                    "images_dir": "images", "masks_dir": "masks",
+                    "class_map": {1: "good", 2: "fair", 3: "poor", 4: "severe"}})
+    assert len(samples) == 8
+    grades = {d.grade for s in samples for d in s.defects}
+    assert grades == {"good", "fair", "poor", "severe"}, grades
+    assert all(d.type == "corrosion" for s in samples for d in s.defects)
+
+
+def test_arrange_corrosion_handles_mask_name_suffix(tmp_path):
+    """mask 叫 <stem>_mask.png 时也得配上，不能整批落单。"""
+    arr = _arr()
+    _make_corrosion_zip_layout(tmp_path, mask_suffix="_mask")
+    import sys as _s
+    argv = _s.argv
+    _s.argv = ["x", "--root", str(tmp_path)]
+    try:
+        assert arr.main() == 0
+    finally:
+        _s.argv = argv
+    assert len(list((tmp_path / "masks").iterdir())) == 8
+
+
+def test_arrange_corrosion_rerun_ignores_its_own_output(tmp_path):
+    """重跑时不能把上一轮生成的 images/ masks/ 再当成输入扫进来。"""
+    arr = _arr()
+    _make_corrosion_zip_layout(tmp_path)
+    import sys as _s
+    argv = _s.argv
+    _s.argv = ["x", "--root", str(tmp_path)]
+    try:
+        assert arr.main() == 0
+        first = sorted(p.name for p in (tmp_path / "images").iterdir())
+        assert arr.main() == 0
+        assert sorted(p.name for p in (tmp_path / "images").iterdir()) == first
+    finally:
+        _s.argv = argv

@@ -164,10 +164,10 @@ SOURCES = [
                 "这条路子也不通就按下面的步骤走浏览器，效果一样。",
         "steps": [
             "在上面的页面点 Download all，拿到 zip（完全公开，不用填表）",
-            "解压后把原图目录改名为 images/、标注 mask 目录改名为 masks/，"
-            "最终形如 {full_dest}/images/*.jpg 与 {full_dest}/masks/*.png",
-            "核对 mask 的像素取值："
-            "python scripts/inspect_masks.py --masks {full_dest}/masks",
+            "解压：cd {full_dest} && unzip -q '*.zip'",
+            "整理成 images/ + masks/ 平铺结构（会自动认出原图和 mask 目录，"
+            "并把 mask 像素取值打出来）："
+            "python scripts/arrange_corrosion.py --root {full_dest}",
             "把实际取值填进 configs/datasets.yaml 里 corrosion_cs_vt 的 class_map。"
             "该条目已设 grade_type: corrosion —— good/fair/poor/severe 会被当作"
             "腐蚀的**有序等级**，映射成程度词（轻微锈蚀/点蚀起皮/层状剥落/截面损失）"
