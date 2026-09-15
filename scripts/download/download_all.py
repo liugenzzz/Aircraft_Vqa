@@ -156,10 +156,12 @@ SOURCES = [
         "size": "约 300 MB",
         "license": "学术开放，商用需确认",
         "page": "https://data.lib.vt.edu/articles/dataset/Corrosion_Condition_State_Semantic_Segmentation_Dataset/16624663",
+        "api": "https://data.lib.vt.edu/api/articles/16624663",
         "url": "https://data.lib.vt.edu/ndownloader/articles/16624663/versions/1",
         "archive": "corrosion_cs.zip",
-        "note": "figshare 的直链模式（ndownloader）没在本仓库验证过；"
-                "下不动就按下面的步骤走浏览器，效果一样。",
+        "note": "整包直链（Download all）服务端没打包，会直接 403 —— 先问 "
+                "figshare API 要逐文件的 download_url，再一个个下。"
+                "这条路子也不通就按下面的步骤走浏览器，效果一样。",
         "steps": [
             "在上面的页面点 Download all，拿到 zip（完全公开，不用填表）",
             "解压后把原图目录改名为 images/、标注 mask 目录改名为 masks/，"
@@ -376,9 +378,60 @@ def do_unpack_local(root: str, src: dict) -> bool:
 
 
 # ---------------------------------------------------------------- 各模式
+def _figshare_files(api: str) -> list:
+    """问 figshare 要这篇 article 的文件清单。
+
+    figshare 的 /ndownloader/articles/<id>/versions/<v>（"Download all"）
+    只有在服务端预先打好整包 zip 时才可用，没打就直接 403 —— VT 这篇
+    就是这种。逐文件的 download_url 一直可用，所以改成先问 API 再逐个下。
+    """
+    import json as _json
+    try:
+        with urllib.request.urlopen(api, timeout=30) as r:
+            data = _json.load(r)
+    except Exception as e:
+        print(f"  问 figshare API 失败（{e}），退回整包直链")
+        return []
+    files = data.get("files") or []
+    out = []
+    for f in files:
+        url = f.get("download_url")
+        name = f.get("name")
+        if url and name:
+            out.append({"url": url, "name": name, "size": f.get("size") or 0})
+    return out
+
+
 def do_auto(root: str, src: dict, keep: bool) -> bool:
     dest = os.path.join(root, src["dest"])
     archive = os.path.join(root, src["archive"])
+
+    if src.get("api"):
+        files = _figshare_files(src["api"])
+        if files:
+            total = sum(f["size"] for f in files)
+            print(f"  API 报 {len(files)} 个文件，共 {_human(total)}")
+            os.makedirs(dest, exist_ok=True)
+            ok_any = False
+            for f in files:
+                out = os.path.join(dest, f["name"])
+                if os.path.exists(out) and os.path.getsize(out) == f["size"]:
+                    print(f"    · {f['name']} 已存在，跳过")
+                    ok_any = True
+                    continue
+                print(f"    · {f['name']} ({_human(f['size'])})")
+                if _download(f["url"], out):
+                    ok_any = True
+                else:
+                    print("      下载失败")
+            if ok_any:
+                # 下来的多半还是一堆 zip，就地解掉
+                do_unpack_local(root, src)
+                if _present(root, src):
+                    return True
+                print("  文件已下好，但目录结构还要人工整理一下")
+            return False
+
     print(f"  下载 {src['size']} -> {archive}")
     # curl -C - 会自动续传，所以重复调用是安全的
     if not _download(src["url"], archive):

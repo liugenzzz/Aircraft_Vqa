@@ -292,3 +292,42 @@ def test_unpack_local_no_archives_is_false(tmp_path):
     (tmp_path / "MVTec_AD").mkdir()
     assert dl.do_unpack_local(
         str(tmp_path), {"dest": "MVTec_AD", "probe": "screw/train/good"}) is False
+
+
+def test_figshare_api_file_list_is_parsed(monkeypatch):
+    """figshare 整包直链 403 时，要能从 API 拿到逐文件的 download_url。"""
+    import io as _io
+    import urllib.request
+    dl = _dl()
+    payload = json.dumps({"files": [
+        {"name": "images.zip", "download_url": "https://x/ndownloader/files/1",
+         "size": 10},
+        {"name": "masks.zip", "download_url": "https://x/ndownloader/files/2",
+         "size": 20},
+        {"name": "readme.txt"},          # 缺 download_url，必须跳过
+    ]}).encode()
+
+    class _R:
+        def read(self, *a):
+            return payload
+        def __enter__(self):
+            return _io.BytesIO(payload)
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _R())
+    files = dl._figshare_files("https://x/api/articles/1")
+    assert [f["name"] for f in files] == ["images.zip", "masks.zip"]
+    assert files[0]["url"].endswith("/files/1")
+
+
+def test_figshare_api_failure_falls_back(monkeypatch):
+    """API 不通不能炸，要退回整包直链那条路。"""
+    import urllib.request
+    dl = _dl()
+
+    def _boom(*a, **k):
+        raise OSError("blocked")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _boom)
+    assert dl._figshare_files("https://x/api/articles/1") == []
