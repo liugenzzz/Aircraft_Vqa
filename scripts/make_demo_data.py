@@ -427,14 +427,23 @@ def gen_closeup(idx: int, rng: random.Random, size=(768, 576)) -> tuple:
 QUALITY_KINDS = ["blur", "occlusion", "overexposure", "darkness"]
 
 
-def degrade(img: Image.Image, kind: str, rng: random.Random) -> Image.Image:
+def degrade(img: Image.Image, kind: str, rng: random.Random) -> tuple:
+    """返回 (劣化后的图, 劣化参数)。
+
+    参数会写进 COCO 的 image 条目，一路带到 VQA 的 meta 里 ——
+    "这张图真的被遮挡了"必须是可审计的事实，否则"无法确认"就是耍赖，
+    而在机务场景教模型耍赖是负向能力。
+    """
     import numpy as np
     w, h = img.size
     if kind == "blur":
-        return img.filter(ImageFilter.GaussianBlur(rng.uniform(3.5, 7.0)))
+        sigma = rng.uniform(3.5, 7.0)
+        return (img.filter(ImageFilter.GaussianBlur(sigma)),
+                {"type": "blur", "sigma": round(sigma, 2)})
     if kind == "occlusion":
         layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         d = ImageDraw.Draw(layer)
+        covered = 0
         for _ in range(rng.randint(1, 2)):
             bw = rng.randint(int(w * 0.35), int(w * 0.6))
             bh = rng.randint(int(h * 0.3), int(h * 0.55))
@@ -442,9 +451,11 @@ def degrade(img: Image.Image, kind: str, rng: random.Random) -> Image.Image:
             y = rng.randint(-bh // 4, h - bh // 2)
             g = rng.randint(20, 55)
             d.rectangle([x, y, x + bw, y + bh], fill=(g, g, g + 4, 235))
+            covered += (min(w, x + bw) - max(0, x)) * (min(h, y + bh) - max(0, y))
         out = img.convert("RGBA")
         out.alpha_composite(layer.filter(ImageFilter.GaussianBlur(2.0)))
-        return out.convert("RGB")
+        return (out.convert("RGB"),
+                {"type": "occlusion", "ratio": round(min(1.0, covered / (w * h)), 3)})
     arr = np.asarray(img, dtype=np.float32)
     if kind == "overexposure":
         yy, xx = np.mgrid[0:h, 0:w]
@@ -452,9 +463,14 @@ def degrade(img: Image.Image, kind: str, rng: random.Random) -> Image.Image:
         r = min(w, h) * rng.uniform(0.45, 0.8)
         glow = np.clip(1.0 - (((xx - cx) ** 2 + (yy - cy) ** 2) ** 0.5) / r, 0, 1)
         arr = arr + (glow[..., None] ** 1.5) * rng.uniform(150, 230)
+        out = np.clip(arr, 0, 255)
+        params = {"type": "overexposure",
+                  "clipped_ratio": round(float((out >= 250).mean()), 3)}
     else:                                        # darkness
-        arr = arr * rng.uniform(0.16, 0.30)
-    return Image.fromarray(np.clip(arr, 0, 255).astype("uint8"))
+        gain = rng.uniform(0.16, 0.30)
+        out = np.clip(arr * gain, 0, 255)
+        params = {"type": "darkness", "gain": round(gain, 3)}
+    return Image.fromarray(out.astype("uint8")), params
 
 
 # ------------------------------------------------------------------ 主流程
@@ -564,16 +580,17 @@ def _emit(root: str, scene: str, counts: dict, rng: random.Random,
         images, annotations, aid = [], [], 1
         for i in range(n):
             img, anns = gen(gi, rng, size)
-            quality = None
+            quality, degradation = None, None
             if rng.random() < degraded_frac:
                 quality = rng.choice(QUALITY_KINDS)
-                img = degrade(img, quality, rng)
+                img, degradation = degrade(img, quality, rng)
             fn = f"{prefix}_{gi:06d}.jpg"
             img.save(os.path.join(sdir, fn), quality=92)
             entry = {"id": i, "file_name": fn,
                      "width": img.width, "height": img.height}
             if quality:
                 entry["quality"] = quality
+                entry["degradation"] = degradation
             images.append(entry)
             for a in anns:
                 annotations.append({"id": aid, "image_id": i,

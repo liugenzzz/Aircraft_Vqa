@@ -19,9 +19,14 @@
 | `negative_answer_says_positive` | 判定为"无异常"但答案文字说有 |
 | `positive_answer_says_negative` | 反之 |
 | `image_missing` | 图片文件不存在（需 `--check-images`）|
-| `grounding_answer_not_pure_json` | 定位族答案带了解释文字 —— 违反自己的 system |
+| `not_pure_json` | `json_only` 任务的答案不是纯 JSON（整串必须能 `json.loads`）|
+| `not_text_then_json` | `text_then_json` 任务没有「一句话 + 换行 + JSON」结构 |
+| `text_format_has_boxes` | `text` 任务的答案里出现了 `bbox_2d` |
+| `system_format_mismatch` | system 与该任务登记的输出格式不匹配 |
+| `answer_asserts_absent_defect` | 答案断言的缺陷不在图里（幻觉数据）|
+| `uncertainty_without_evidence` | 说"看不清"却没有劣化证据 —— 等于教模型耍赖 |
+| `image_token_count_mismatch` | 多图条目的 `<image>` 数量与 `images` 长度不符 |
 | `answer_mentions_unasked_term` | 答案提到问题里没出现过的缺陷名（模板变量泄漏）|
-| `system_family_mismatch` | system 与任务族不匹配 |
 | `uncertainty_without_hedge` | 不确定样本的答案没给出"无法确认/建议补拍" |
 | `uncertainty_with_boxes` | 不确定样本却输出了框 |
 | `too_few_turns` | 多轮条目轮次少于 2 |
@@ -30,6 +35,25 @@
 质检报告写进 `data/vqa/stats.json` 的 `qc` 字段，含错误分布和前 20 个失败样例。
 
 **通过率低于 95% 就别往下走**，先看错误分布定位原因。
+
+## 1b. 多样性体检（`stats.json` 的 `diversity` 段）
+
+模板法最容易出的问题是"换汤不换药"：统计上量很大，实际几十个模板复读几万遍。
+构建完看这几个数：
+
+| 指标 | 含义 | 建议阈值 |
+|---|---|---|
+| `unique_questions_per_task` | 每个任务实际用到的不同问法数 | **≥ 30**，不足就跑 `gen_question_bank.py` 扩写 |
+| `distinct_2_question` / `distinct_2_answer` | 二元组多样性 | 越高越好，答案低于 0.05 要警惕 |
+| `unique_answer_ratio` | 不重复答案占比 | 越高越好 |
+| `top20_answer_share` | 最高频的 20 条答案占总量比例 | **≤ 5%**，超了说明有模板在复读，必须重写 |
+
+`negatives` 段把两类负样本分开统计 —— "这图没问题"（正常图）和
+"这图有问题但不是你问的那个"（反事实）考的是不同能力，混在一起看占比
+会掩盖其中一类不足。
+
+`bbox_edge` 段统计框贴边率。大量 0 / 1000 说明合成时缺陷被贴到了图像边缘，
+或者坐标换算有 clip 问题。
 
 ## 2. 人工抽检（必做）
 
@@ -71,11 +95,20 @@ MVTec AD / LOCO 是 CC BY-NC-SA 4.0。用 `--commercial-only` 可以一键排除
 `normal_per_anomalous` 调到 0.3 以下时，模型会倾向于"看到什么都报缺陷"。
 默认 1.0（正负 1:1）是个安全起点。
 
-### 3.6 别让 system 和答案自相矛盾
-定位族的 system 写了"不附加任何解释"，答案就必须是纯 JSON。
-曾经 `grounding_negative` 答成 `[]\n该口盖未见划伤…`，多一句说明，
-等于用数据教模型不遵循 system —— 而 system following 是部署时最依赖的能力。
-质检里 `grounding_answer_not_pure_json` 专门查这个。
+### 3.6 system 要按输出格式绑，不是按任务语义绑
+这个坑踩了两次。第一次全局一套 system；第二次按 localization/recognition 分 ——
+**还是错**，因为 localization 里混着纯 JSON 输出和自然语言输出两种任务，
+4 个定位任务里 3 个违反自己的 system。
+
+契约是关于"输出长什么样"的。现在按 `json_only` / `text_then_json` / `text` /
+`dialog` 分，每个任务在 `templates.OUTPUT_FORMAT` 登记，漏登记直接报错。
+质检按 `output_format` 自动校验答案形态。
+
+### 3.6b 模板异常不要静默吞掉
+构建器里曾有 `try: fn() except: rec = None`，结果模板里一个 `.format` 用错，
+`grade_assessment` 和 `severity_action` 两整类任务凭空消失都没人发现。
+现在异常计入 `builder.failures` 并在构建日志里打印，`strict: true` 可直接抛。
+**跑大批量之前先用 strict 跑一遍小样本。**
 
 ### 3.7 负样本别复用正样本的变量槽
 问的是"列出全部异常"，答的是"未见**划伤**或其他可见缺陷" —— "划伤"从哪来的？
@@ -92,7 +125,14 @@ MVTec AD / LOCO 是 CC BY-NC-SA 4.0。用 `--commercial-only` 可以一键排除
 底图还可能是合成图。在合成图上训练出自信的适航判定，是会出事的。
 现在所有处置类答案都带限定语，且不出现"不影响适航""可放行"这类断言。
 
-### 3.10 螺纹损伤看不见的话等于没标
+### 3.10 "看不清"必须有物理依据
+没有劣化证据就答"无法确认"，是在教模型随机耍赖 —— 该给答案的时候说看不清，
+在机务场景是负向能力，比没有这类样本更糟。
+合成器把劣化参数（`{type: "occlusion", ratio: 0.42}`）写进标注一路带到 meta，
+质检里 `uncertainty_without_evidence` 卡死没有证据的条目。
+接真实数据时用 Laplacian 方差、过曝像素占比这类指标先筛。
+
+### 3.10b 螺纹损伤看不见的话等于没标
 螺纹在俯视的铆钉阵列里根本不可见，所以 `thread_damage` 只在**特写场景**
 （`gen_closeup`，侧视螺栓）里生成。同理，两种场景的被检对象一个是壁板、
 一个是螺栓，必须分成两个数据集条目，否则问答会说出"这张检查口盖照片"

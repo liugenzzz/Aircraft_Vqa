@@ -23,8 +23,10 @@ IMAGE_TOKEN = "<image>"
 
 # 训练框架会忽略不认识的键，所以把溯源信息带在条目里不影响训练，
 # 但做分层评测（按任务/按数据源/按缺陷类型看指标）和排错时非常关键。
-META_KEYS = ("task", "family", "dataset", "category", "split", "label",
-             "defect_types", "coord_mode", "license")
+META_KEYS = ("task", "family", "output_format", "dataset", "category", "split",
+             "image_status", "image_defect_types", "asked_defect_types",
+             "answer_defect_types", "variant", "coord_mode", "image_hw",
+             "license")
 
 
 def _meta(r: dict) -> dict:
@@ -38,6 +40,12 @@ def _img_path(path: str, image_root: Optional[str], relative: bool) -> str:
         except ValueError:
             return path
     return path
+
+
+def _images(r: dict, image_root, relative) -> list:
+    """条目自带 images 时用它（多图对比），否则用单张 image。"""
+    paths = r.get("images") or [r["image"]]
+    return [_img_path(p, image_root, relative) for p in paths]
 
 
 def _turn_pairs(r: dict) -> list:
@@ -76,12 +84,13 @@ def to_sharegpt(r: dict, image_root=None, relative=False,
     多轮就是继续追加 human/gpt 对，图片 token 只挂第一轮。
     """
     convs = []
+    imgs = _images(r, image_root, relative)
     for i, (q, a) in enumerate(_turn_pairs(r)):
+        # 图片 token 数量必须等于 images 的长度，多图时全挂在第一轮
         convs.append({"from": "human",
-                      "value": f"{IMAGE_TOKEN}{q}" if i == 0 else q})
+                      "value": f"{IMAGE_TOKEN * len(imgs)}{q}" if i == 0 else q})
         convs.append({"from": "gpt", "value": a})
-    out = {"conversations": convs,
-           "images": [_img_path(r["image"], image_root, relative)]}
+    out = {"conversations": convs, "images": imgs}
     if with_system and r.get("system"):
         out["system"] = r["system"]
     if with_meta:
@@ -95,12 +104,12 @@ def to_swift(r: dict, image_root=None, relative=False, with_system=True,
     msgs = []
     if with_system and r.get("system"):
         msgs.append({"role": "system", "content": r["system"]})
+    imgs = _images(r, image_root, relative)
     for i, (q, a) in enumerate(_turn_pairs(r)):
         msgs.append({"role": "user",
-                     "content": f"{IMAGE_TOKEN}{q}" if i == 0 else q})
+                     "content": f"{IMAGE_TOKEN * len(imgs)}{q}" if i == 0 else q})
         msgs.append({"role": "assistant", "content": a})
-    out = {"messages": msgs,
-           "images": [_img_path(r["image"], image_root, relative)]}
+    out = {"messages": msgs, "images": imgs}
     if with_meta:
         out["id"] = r.get("qa_id")
         out["meta"] = _meta(r)
@@ -114,10 +123,10 @@ def to_openai(r: dict, image_root=None, relative=False, with_system=True,
         msgs.append({"role": "system", "content": r["system"]})
     for i, (q, a) in enumerate(_turn_pairs(r)):
         if i == 0:
-            msgs.append({"role": "user", "content": [
-                {"type": "image",
-                 "image": _img_path(r["image"], image_root, relative)},
-                {"type": "text", "text": q}]})
+            parts = [{"type": "image", "image": p}
+                     for p in _images(r, image_root, relative)]
+            msgs.append({"role": "user",
+                         "content": parts + [{"type": "text", "text": q}]})
         else:
             msgs.append({"role": "user", "content": [{"type": "text", "text": q}]})
         msgs.append({"role": "assistant", "content": [{"type": "text", "text": a}]})

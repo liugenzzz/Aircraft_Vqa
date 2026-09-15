@@ -185,15 +185,108 @@ def group_split(records: list, ratios=(0.95, 0.03, 0.02), seed: int = 0) -> dict
     return out
 
 
+def diversity(records: list, top_k: int = 20) -> dict:
+    """多样性体检：问法够不够花、答案是不是大段复读。
+
+    模板法最容易出的问题是"换汤不换药" —— 统计上看着量很大，
+    实际几十个模板复读几万遍。distinct-2 和高频答案占比能一眼看出来。
+    """
+    import re as _re
+    by_task_q = defaultdict(set)
+    q_all, a_all = [], []
+    for r in records:
+        by_task_q[r["task"]].add(r["question"])
+        q_all.append(r["question"])
+        a_all.append(r["answer"])
+
+    def distinct_n(texts: list, n: int = 2) -> float:
+        grams, total = set(), 0
+        for t in texts:
+            toks = _re.findall(r"[\u4e00-\u9fa5]|[a-zA-Z0-9_]+", t)
+            for i in range(len(toks) - n + 1):
+                grams.add(tuple(toks[i:i + n]))
+                total += 1
+        return round(len(grams) / total, 4) if total else 0.0
+
+    ans_counter = Counter(a_all)
+    top = ans_counter.most_common(top_k)
+    return {
+        "unique_questions_per_task": {k: len(v) for k, v in
+                                      sorted(by_task_q.items())},
+        "distinct_2_question": distinct_n(q_all, 2),
+        "distinct_2_answer": distinct_n(a_all, 2),
+        "unique_answer_ratio": round(len(ans_counter) / len(a_all), 4)
+        if a_all else 0.0,
+        f"top{top_k}_answer_share": round(
+            sum(c for _, c in top) / len(a_all), 4) if a_all else 0.0,
+        "top5_answers": [{"n": c, "text": t[:70]} for t, c in top[:5]],
+    }
+
+
+def negative_breakdown(records: list) -> dict:
+    """两类负样本要分开统计 —— 它们考的是不同能力。
+
+    "这图没问题"（正常图）和"这图有问题但不是你问的那个"（反事实）
+    混在一起看占比，会掩盖其中一类不足。
+    """
+    empty = [r for r in records if r.get("n_boxes") == 0
+             or r.get("count") == 0]
+    normal_img = [r for r in empty if r.get("image_status") == "normal"]
+    counterfactual = [r for r in empty if r.get("image_status") == "anomalous"]
+    n = len(records) or 1
+    return {
+        "total_negative": len(empty),
+        "negative_share": round(len(empty) / n, 4),
+        "on_normal_image": len(normal_img),
+        "on_normal_share": round(len(normal_img) / n, 4),
+        "counterfactual": len(counterfactual),
+        "counterfactual_share": round(len(counterfactual) / n, 4),
+    }
+
+
+def bbox_edge_stats(records: list) -> dict:
+    """框贴边率。大量 0 / 1000 说明合成时缺陷被贴到了图像边缘。"""
+    import json as _json
+    import re as _re
+    edge = total = 0
+    for r in records:
+        m = _re.search(r"\[.*\]", r.get("answer", ""), _re.S)
+        if not m:
+            continue
+        try:
+            items = _json.loads(m.group(0))
+        except Exception:
+            continue
+        hi = 1000 if r.get("coord_mode", "norm1000") == "norm1000" else None
+        for it in items:
+            if not isinstance(it, dict) or "bbox_2d" not in it:
+                continue
+            c = it["bbox_2d"]
+            total += 1
+            if hi and (min(c) <= 1 or max(c) >= hi - 1):
+                edge += 1
+    return {"n_boxes": total, "touching_edge": edge,
+            "edge_ratio": round(edge / total, 4) if total else 0.0}
+
+
 def stats(records: list) -> dict:
     return {
         "total": len(records),
         "by_family": dict(Counter(r["family"] for r in records)),
         "by_task": dict(Counter(r["task"] for r in records).most_common()),
         "by_dataset": dict(Counter(r["dataset"] for r in records).most_common()),
-        "by_label": dict(Counter(r["label"] for r in records)),
-        "by_defect_type": dict(Counter(
-            t for r in records for t in (r.get("defect_types") or [])).most_common()),
+        "by_image_status": dict(Counter(r.get("image_status") for r in records)),
+        "by_image_defect_type": dict(Counter(
+            t for r in records
+            for t in (r.get("image_defect_types") or [])).most_common()),
+        "by_asked_defect_type": dict(Counter(
+            t for r in records
+            for t in (r.get("asked_defect_types") or [])).most_common()),
         "n_images": len({r["image"] for r in records}),
         "commercial_ok": dict(Counter(str(r.get("commercial_ok")) for r in records)),
+        "by_output_format": dict(Counter(r.get("output_format", "?")
+                                         for r in records)),
+        "diversity": diversity(records),
+        "negatives": negative_breakdown(records),
+        "bbox_edge": bbox_edge_stats(records),
     }

@@ -40,6 +40,7 @@ TASK_DESC = {
     "grade_assessment": ("缺陷识别", "有序程度分级判定（仅带等级标注的源会产生）"),
     "uncertainty": ("缺陷识别", "成像模糊/遮挡/过曝时答无法确认并建议补拍"),
     "multi_turn": ("多轮追问", "有无 → 定位 → 处置，复刻机务问诊流程"),
+    "pair_compare": ("多图对比", "正常件参考图 + 待检图 → 指出差异（机务实际就是比着看）"),
 }
 ORDER = list(TASK_DESC)
 
@@ -49,7 +50,7 @@ def pick(records: list, task: str, rng: random.Random, prefer_anomalous=True):
     if not cands:
         return None
     if prefer_anomalous and task != "grounding_negative":
-        anom = [r for r in cands if r.get("label") == "anomalous"]
+        anom = [r for r in cands if r.get("image_status") == "anomalous"]
         cands = anom or cands
     # 优先挑合成源 —— 图片能对着看，缺陷类型也是真的细粒度
     syn = [r for r in cands if r["dataset"].startswith("synthetic")]
@@ -92,10 +93,13 @@ def main() -> int:
             "任务族": family,
             "说明": desc,
             "来源": f"{r['dataset']}/{r['category']}",
-            "图片": r["image"],
+            "图片": r.get("images") or r["image"],
             "图片尺寸": [r["width"], r["height"]],
-            "标签": r["label"],
-            "缺陷类型": r.get("defect_types") or [],
+            "图像状态": r.get("image_status"),
+            "图里有的缺陷": r.get("image_defect_types") or [],
+            "这条问的缺陷": r.get("asked_defect_types") or [],
+            "答案断言的缺陷": r.get("answer_defect_types") or [],
+            "输出格式": r.get("output_format"),
             "坐标模式": r.get("coord_mode"),
             "system": r["system"],
         }
@@ -106,7 +110,8 @@ def main() -> int:
             row["问"] = r["question"]
             row["答"] = r["answer"]
         for k in ("options", "answer_letter", "grade", "count", "n_boxes",
-                  "region_answer", "yes_no", "severity"):
+                  "region_answer", "yes_no", "severity", "variant",
+                  "degradation", "reference_image"):
             if k in r:
                 row[k] = r[k]
         row[f"导出后（{args.format} 格式）"] = export(r)

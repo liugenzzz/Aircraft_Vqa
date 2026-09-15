@@ -47,7 +47,7 @@ class_balance_tasks: [classification_open, classification_mc]
 # 以及"局部结构视觉聚焦与语义定位"这项功能要求 -> grounding / referring / region_word
 task_ratio:
   # ---- 缺陷识别（对标 >=90%）15% ----
-  discrimination: 0.15
+  discrimination: 0.14
   # ---- 异常类别识别（对标 >=88%）18% ----
   classification_open: 0.10
   classification_mc: 0.08
@@ -59,16 +59,19 @@ task_ratio:
   # 是抑制"用户说有就一定有"的关键，权重要高于正常图负样本。
   grounding_negative: 0.06
   grounding_counterfactual: 0.08
-  referring_region: 0.06       # 难负样本贴着缺陷旁边采，对应"局部结构聚焦"
+  referring_region: 0.05       # 难负样本贴着缺陷旁边采，对应"局部结构聚焦"
   region_word: 0.02
   counting: 0.03               # 含 0/1/多 三种边界
   # ---- 多轮追问 8% ----
   multi_turn: 0.08
+  # ---- 多图对比 4%（正常件参考图 + 待检图 -> 指出差异）----
+  # 机务实际就是比着看的；MMAD 与 Anomaly-OV 都强调这个能力
+  pair_compare: 0.04
   # ---- 不确定表达 4%（成像模糊/遮挡/过曝 -> 无法确认，建议补拍）----
   # system 里写了"无法确认时直接说明"，必须有样本把它教出来，否则是空指令
   uncertainty: 0.04
   # ---- 辅助能力 10% ----
-  description: 0.06
+  description: 0.05
   severity_action: 0.03
   object_recognition: 0.01
 

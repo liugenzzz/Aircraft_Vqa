@@ -396,7 +396,7 @@ def test_seed_templates_are_not_colloquial():
     gqb = _load_script("gen_question_bank.py")
     from aircraft_vqa.vqa import templates as TT
     pools = list(TT.QUESTIONS.values()) + [
-        TT.Q_MT_T2_POS, TT.Q_MT_T2_NEG, TT.Q_MT_T3_POS]
+        TT.Q_MT_T2_POS, TT.Q_MT_T2_NEG, TT.Q_MT_T3_ONE, TT.Q_MT_T3_MANY]
     for pool in pools:
         for q in pool:
             if q.isascii():          # 英文问法不走中文口语规则
@@ -914,13 +914,31 @@ def test_grounding_answers_are_pure_json(tmp_path):
             json.loads(a)
 
 
-def test_system_is_bound_to_family(tmp_path):
-    from aircraft_vqa.vqa.templates import SYSTEM_BY_FAMILY
-    fams = set()
+def test_system_is_bound_to_output_format(tmp_path):
+    """system 按输出格式绑，不按任务语义族绑 —— 语义族里混着两种输出格式。"""
+    from aircraft_vqa.vqa.templates import OUTPUT_FORMAT, SYSTEM_BY_OUTPUT
+    seen = set()
     for r in _build_all(tmp_path):
-        fams.add(r["family"])
-        assert r["system"] == SYSTEM_BY_FAMILY[r["family"]], r["task"]
-    assert fams == {"localization", "recognition", "dialog"}
+        ofmt = OUTPUT_FORMAT[r["task"]]
+        seen.add(ofmt)
+        assert r["output_format"] == ofmt, r["task"]
+        assert r["system"] == SYSTEM_BY_OUTPUT[ofmt], r["task"]
+        assert check_record(r) == [], (r["task"], check_record(r))
+    assert {"json_only", "text", "dialog"} <= seen
+
+
+def test_every_task_registers_output_format():
+    """新增任务漏登记 output_format 会用错 system，这里卡死。"""
+    from aircraft_vqa.vqa import templates as TT
+    for task in TT.QUESTIONS:
+        assert task in TT.OUTPUT_FORMAT, f"{task} 未登记输出格式"
+    assert set(TT.OUTPUT_FORMAT.values()) <= set(TT.SYSTEM_BY_OUTPUT)
+
+
+def test_text_tasks_never_emit_boxes(tmp_path):
+    for r in _build_all(tmp_path):
+        if r["output_format"] == "text":
+            assert "bbox_2d" not in r["answer"], (r["task"], r["answer"])
 
 
 def test_negative_answer_never_mentions_unasked_defect(tmp_path):
@@ -937,7 +955,10 @@ def test_counterfactual_asks_absent_type_and_answers_empty(tmp_path):
         if r["task"] == "grounding_counterfactual":
             n += 1
             assert r["answer"].strip() == "[]"
-            assert r["absent_type"] not in r["present_types"]
+            assert r["absent_type"] not in r["image_defect_types"]
+            assert r["asked_defect_types"] == [r["absent_type"]]
+            assert r["answer_defect_types"] == []
+            assert r["variant"] == "counterfactual"
             # 问的类型必须真的不在图里
             assert TAX.zh(r["absent_type"]) in r["question"]
             assert check_record(r) == []
@@ -981,6 +1002,7 @@ def test_no_fake_reasoning_phrases(tmp_path):
         text = r["answer"] + " ".join(
             t["answer"] for t in r.get("turns", []))
         assert "可见相应特征" not in text
+        # 严重度是类型规则映射的，不是从图上判读的，不能声称"依据是画面…"
         assert "依据是画面" not in text
 
 
@@ -991,8 +1013,15 @@ def test_no_airworthiness_verdicts(tmp_path):
             t["answer"] for t in r.get("turns", []))
         assert "不影响适航" not in text
         assert "可放行" not in text
-        if r["task"] in ("severity_action", "grade_assessment"):
-            assert "AMM/SRM" in text and "持照人员" in text, "缺少限定语"
+    # 限定语有多个变体且只在一部分样本上带 —— 每条都带同一句会被当成
+    # 机械后缀复读。这里只要求"确实有一部分带"。
+    from aircraft_vqa.vqa import templates as TT
+    adv = [r for r in _build_all(tmp_path)
+           if r["task"] in ("severity_action", "grade_assessment")]
+    if adv:
+        withadv = sum(1 for r in adv
+                      if any(v in r["answer"] for v in TT.ADVISORY_VARIANTS))
+        assert 0 < withadv < len(adv) or len(adv) < 4
 
 
 def test_discrimination_gives_count_for_multiple_defects(tmp_path):
@@ -1050,7 +1079,8 @@ def test_export_carries_id_and_meta(tmp_path):
         out = fn(r)
         assert out.get("id") == r["qa_id"], name
         assert out["meta"]["task"] == r["task"], name
-        assert "defect_types" in out["meta"], name
+        assert "image_defect_types" in out["meta"], name
+        assert "image_hw" in out["meta"], name
         assert "id" not in fn(r, with_meta=False), name
 
 
@@ -1085,3 +1115,160 @@ def test_uncertainty_fix_matches_cause(tmp_path):
     s.meta["image_quality"] = "occlusion"
     assert all("照明" not in r["answer"] and "光照" not in r["answer"]
                for r in b.build(s))
+
+
+# ================================================================== 二轮评审
+def test_uncertainty_has_auditable_evidence(tmp_path):
+    """"看不清"必须有物理依据，否则是在教模型耍赖 —— 机务场景的负向能力。"""
+    cfg = BuildConfig(max_qa_per_sample=30)
+    cfg.task_weights = {k: 1.0 for k in cfg.task_weights}
+    b = VQABuilder(cfg, TAX)
+    s = _sample(tmp_path, "anomalous", "crack")
+    s.meta.update({"image_quality": "occlusion",
+                   "degradation": {"type": "occlusion", "ratio": 0.42}})
+    recs = b.build(s)
+    assert recs
+    for r in recs:
+        assert r["degradation"]["ratio"] == 0.42
+        assert check_record(r) == []
+    # 没有劣化证据的 uncertainty 条目要被质检拦下
+    bad = dict(recs[0]); bad.pop("degradation"); bad.pop("image_quality", None)
+    assert "uncertainty_without_evidence" in check_record(bad)
+
+
+def test_uncertainty_prefers_defects_present_in_image(tmp_path):
+    """在劣化图上问一个不存在的类型，"没有"和"看不清"是混淆的。"""
+    cfg = BuildConfig(max_qa_per_sample=30,
+                      active_defect_types=["crack", "corrosion", "dent"])
+    cfg.task_weights = {k: 1.0 for k in cfg.task_weights}
+    b = VQABuilder(cfg, TAX)
+    s = _sample(tmp_path, "anomalous", "crack")
+    s.meta["image_quality"] = "blur"
+    asked = [r["asked_defect_types"][0] for r in b.build(s)]
+    assert asked[0] == "crack"          # 图里真有的排在最前
+
+
+def test_meta_defect_fields_are_semantically_separated(tmp_path):
+    """image / asked / answer 三个缺陷字段混成一个会让分层评测全部失效。"""
+    for r in _build_all(tmp_path):
+        assert isinstance(r["image_defect_types"], list)
+        assert isinstance(r["asked_defect_types"], list)
+        assert isinstance(r["answer_defect_types"], list)
+        # 幻觉闸门
+        img, ans = set(r["image_defect_types"]), set(r["answer_defect_types"])
+        assert not ans or ans <= img, (r["task"], ans, img)
+        assert "label" not in r        # 已改名 image_status，避免与 bbox 的 label 混淆
+        assert r["image_status"] in ("normal", "anomalous")
+
+
+def test_qc_blocks_hallucinated_defect_assertion():
+    bad = {"task": "grounding_all", "output_format": "json_only",
+           "question": "q", "image_status": "anomalous",
+           "image_defect_types": ["crack"], "answer_defect_types": ["corrosion"],
+           "answer": '[{"bbox_2d": [1,2,3,4], "label": "腐蚀锈蚀"}]',
+           "coord_mode": "norm1000"}
+    assert "answer_asserts_absent_defect" in check_record(bad)
+
+
+def test_multi_turn_disambiguates_reference(tmp_path):
+    """前文有多处缺陷时，第三轮必须点名问哪一处。"""
+    cfg = BuildConfig(max_qa_per_sample=30)
+    cfg.task_weights = dict(cfg.task_weights, multi_turn=1.0)
+    b = VQABuilder(cfg, TAX)
+    s = _sample(tmp_path, "anomalous", "crack", n=1)
+    s.defects.append(Defect(type="corrosion", type_raw="corrosion",
+                            type_zh=TAX.zh("corrosion"), bbox=[200, 20, 260, 80],
+                            area_ratio=0.03, region="右下", severity="major"))
+    r = next(x for x in b.build(s) if x["task"] == "multi_turn")
+    t3q = r["turns"][-1]["question"]
+    assert "裂纹" in t3q or "腐蚀锈蚀" in t3q, t3q     # 必须点名
+    # 第一轮的方位要和缺陷一一对应
+    t1a = r["turns"][0]["answer"]
+    assert "裂纹位于画面" in t1a and "腐蚀锈蚀位于画面" in t1a, t1a
+
+
+def test_single_defect_multi_turn_keeps_simple_reference(tmp_path):
+    cfg = BuildConfig(max_qa_per_sample=30)
+    cfg.task_weights = dict(cfg.task_weights, multi_turn=1.0)
+    b = VQABuilder(cfg, TAX)
+    r = next(x for x in b.build(_sample(tmp_path, "anomalous", "crack", n=1))
+             if x["task"] == "multi_turn")
+    assert "该缺陷" in r["turns"][-1]["question"] or "这个" in r["turns"][-1]["question"]
+
+
+def test_mc_distractors_are_plausible_for_the_part(tmp_path):
+    """拿螺纹损伤去干扰一张蒙皮图，不看图都能排掉。"""
+    from aircraft_vqa.vqa.distractor import PART_DEFECTS
+    active = ["fastener_missing", "fastener_loose", "thread_damage", "crack",
+              "corrosion", "dent", "scratch", "paint_peeling"]
+    cfg = BuildConfig(max_qa_per_sample=30, active_defect_types=active)
+    cfg.task_weights = dict(cfg.task_weights, classification_mc=1.0)
+    b = VQABuilder(cfg, TAX)
+    allowed = {TAX.zh(t) for t in PART_DEFECTS["structure"]}
+    n = 0
+    for dt in ("crack", "corrosion", "dent", "scratch"):
+        for r in b.build(_sample(tmp_path, "anomalous", dt)):
+            if r["task"] == "classification_mc":
+                n += 1
+                assert set(r["options"]) <= allowed, r["options"]
+    assert n >= 3
+
+
+def test_pair_compare_emits_two_images(tmp_path):
+    ref = tmp_path / "ref.jpg"
+    Image.new("RGB", (400, 300), (128, 128, 128)).save(ref)
+    cfg = BuildConfig(max_qa_per_sample=30)
+    cfg.task_weights = dict(cfg.task_weights, pair_compare=1.0)
+    b = VQABuilder(cfg, TAX)
+    b.set_reference_pool({("t", "panel"): [str(ref)] * 3})
+    r = next(x for x in b.build(_sample(tmp_path, "anomalous", "crack"))
+             if x["task"] == "pair_compare")
+    assert len(r["images"]) == 2 and r["images"][0] == str(ref)
+    from aircraft_vqa.export.qwen3vl import to_sharegpt
+    out = to_sharegpt(r)
+    assert len(out["images"]) == 2
+    assert out["conversations"][0]["value"].count("<image>") == 2
+    assert check_record(r) == []
+
+
+def test_pair_compare_absent_without_reference_pool(tmp_path):
+    cfg = BuildConfig(max_qa_per_sample=30)
+    cfg.task_weights = dict(cfg.task_weights, pair_compare=1.0)
+    b = VQABuilder(cfg, TAX)          # 没注入参考图池
+    assert all(r["task"] != "pair_compare"
+               for r in b.build(_sample(tmp_path, "anomalous", "crack")))
+
+
+def test_builder_records_template_failures(tmp_path):
+    """模板异常以前被静默吞掉，整类任务凭空消失都没人发现。"""
+    cfg = BuildConfig(max_qa_per_sample=30)
+    b = VQABuilder(cfg, TAX)
+    b._t_describe = lambda s, rng: (_ for _ in ()).throw(KeyError("boom"))
+    cfg.task_weights = dict(cfg.task_weights, description=1.0)
+    b.build(_sample(tmp_path))
+    assert any("description" in k for k in b.failures), b.failures
+    # strict 模式直接抛
+    b.cfg.strict = True
+    with pytest.raises(KeyError):
+        b.build(_sample(tmp_path, "anomalous", "corrosion"))
+
+
+def test_diversity_metrics_flag_repetition():
+    from aircraft_vqa.balance import diversity
+    same = [{"task": "t", "question": "问题", "answer": "完全一样的答案"}] * 50
+    d = diversity(same)
+    assert d["unique_answer_ratio"] < 0.05
+    assert d["top20_answer_share"] == 1.0
+    varied = [{"task": "t", "question": f"问题{i}", "answer": f"答案{i}不同的内容"}
+              for i in range(50)]
+    assert diversity(varied)["unique_answer_ratio"] == 1.0
+
+
+def test_negative_breakdown_separates_two_abilities():
+    from aircraft_vqa.balance import negative_breakdown
+    recs = ([{"n_boxes": 0, "image_status": "normal"}] * 3 +
+            [{"n_boxes": 0, "image_status": "anomalous"}] * 2 +
+            [{"n_boxes": 2, "image_status": "anomalous"}] * 5)
+    b = negative_breakdown(recs)
+    assert b["on_normal_image"] == 3 and b["counterfactual"] == 2
+    assert b["total_negative"] == 5

@@ -32,6 +32,7 @@ RECOGNITION_TASKS = ("discrimination", "classification_open", "classification_mc
                      "description", "severity_action", "object_recognition",
                      "grade_assessment", "uncertainty")
 DIALOG_TASKS = ("multi_turn",)
+COMPARE_TASKS = ("pair_compare",)
 GRADING_TASKS = ("grade_assessment",)
 
 
@@ -61,8 +62,13 @@ class BuildConfig:
         # 比"正常图答空列表"难得多，是抑制"用户说有就一定有"的关键。
         "grounding_counterfactual": 1.0,
         "uncertainty": 1.0,        # 只有标了成像质量问题的样本才触发
+        # 多图对比：给一张同类正常件参考图 + 待检图。机务实际就是比着看的，
+        # 只有配了参考图池的数据源才会触发。
+        "pair_compare": 0.8,
     })
     enable_tasks: Optional[list] = None   # None = 全开
+    # True 时模板报错直接抛出而不是跳过该任务。跑大批量前先用 strict 跑一遍小样本。
+    strict: bool = False
     n_options: int = 4
     # other_anomaly（源数据没有细粒度类型）时，自动跳过类型类问题
     skip_unknown_type_tasks: bool = True
@@ -94,6 +100,19 @@ class VQABuilder:
                           for k, v in self.qpool.items()}
         self.active = (set(self.cfg.active_defect_types)
                        if self.cfg.active_defect_types else None)
+        # (dataset, category) -> 该类正常件图片路径列表，供多图对比取参考图
+        self.ref_pool: dict = {}
+        from collections import Counter as _C
+        self.failures = _C()      # 模板异常计数，构建结束后会打印出来
+
+    def set_reference_pool(self, pool: dict) -> None:
+        """注入正常件参考图池。没注入就不会产出 pair_compare 样本。"""
+        self.ref_pool = pool or {}
+
+    def _reference_image(self, s: UnifiedSample, rng) -> Optional[str]:
+        pool = self.ref_pool.get((s.dataset, s.category)) or []
+        pool = [p for p in pool if p != s.image_path]
+        return rng.choice(pool) if pool else None
 
     # ---------------------------------------------------------- 工具
     def _rng(self, sample_id: str) -> random.Random:
@@ -133,19 +152,28 @@ class VQABuilder:
              extra: Optional[dict] = None) -> dict:
         # system 按任务族绑定：定位族要契约、识别族要事实、多轮要指代承接。
         # 全局一把梭会出现"system 说只输出 JSON、答案却带解释"这种自相矛盾。
-        system = system or T.SYSTEM_BY_FAMILY[family]
+        # system 按**输出格式**绑定。任务必须在 templates.OUTPUT_FORMAT 里登记，
+        # 漏登记会直接报错而不是悄悄用错 system。
+        ofmt = T.OUTPUT_FORMAT[task]
+        system = system or T.SYSTEM_BY_OUTPUT[ofmt]
         qa_id = hashlib.md5(f"{s.sample_id}|{task}|{question}".encode()).hexdigest()[:16]
         r = {
             "qa_id": qa_id,
             "sample_id": s.sample_id,
             "image": s.image_path,
-            "width": s.width, "height": s.height,
-            "task": task, "family": family,
+            "image_hw": [s.height, s.width],
+            "task": task, "family": family, "output_format": ofmt,
             "system": system,
             "question": question.strip(),
             "answer": answer.strip(),
-            "label": s.label,
-            "defect_types": s.defect_types,
+            # 三个缺陷字段语义严格分开，混成一个 defect_types 会让所有
+            # 分层评测失效：图里客观有什么、这条问的是什么、答案断言存在什么，
+            # 是三件不同的事。一致性校验靠
+            #   answer_defect_types ⊆ image_defect_types
+            "image_status": s.label,          # 原 label；和 bbox 里的 label 同名不同义
+            "image_defect_types": s.defect_types,
+            "asked_defect_types": [],
+            "answer_defect_types": [],
             "dataset": s.dataset, "category": s.category, "split": s.split,
             "object": s.object_name,
             "license": s.license, "commercial_ok": s.commercial_ok,
@@ -153,7 +181,29 @@ class VQABuilder:
         }
         if extra:
             r.update(extra)
+        # 答案里断言存在的缺陷 = JSON 框里的 label（定位类）或显式给出的
+        if "answer_defect_types" not in (extra or {}):
+            r["answer_defect_types"] = self._types_in_answer(r["answer"])
         return r
+
+    def _types_in_answer(self, answer: str) -> list:
+        """从答案的 JSON 框里抽出被断言存在的缺陷类型（canonical 名）。"""
+        import re as _re
+        m = _re.search(r"\[.*\]", answer, _re.S)
+        if not m:
+            return []
+        try:
+            items = json.loads(m.group(0))
+        except Exception:
+            return []
+        zh2canon = {self.tax.zh(t): t for t in self.tax.all_types()}
+        out = []
+        for it in items:
+            if isinstance(it, dict):
+                c = zh2canon.get(it.get("label"), it.get("label"))
+                if c and c not in out:
+                    out.append(c)
+        return out
 
     def _rec_multi(self, s: UnifiedSample, turns: list, system: str,
                    extra: Optional[dict] = None) -> dict:
@@ -162,10 +212,54 @@ class VQABuilder:
                       system, extra)
         r["turns"] = [{"question": q, "answer": a} for q, a in turns]
         r["n_turns"] = len(turns)
+        r["answer_defect_types"] = self._types_in_answer(
+            " ".join(a for _, a in turns))
         return r
 
     def _ctx(self, s: UnifiedSample) -> dict:
         return {"obj": s.object_zh, "ctx": s.aircraft_ctx}
+
+    def _where_phrase(self, s: UnifiedSample) -> str:
+        """一一对应的方位描述："裂纹位于画面右下，腐蚀锈蚀位于画面左下"。
+
+        "可见裂纹、腐蚀锈蚀，位于右下、左下"这种并列写法让人对不上号，
+        模型也学不到缺陷与位置的绑定关系。
+        """
+        parts, seen = [], set()
+        for d in s.defects:
+            key = (d.type, d.region)
+            if key in seen or not d.region:
+                continue
+            seen.add(key)
+            parts.append(f"{self.tax.zh(d.type)}位于画面{d.region}")
+        if not parts:
+            return f"可见{'、'.join(self.tax.zh(t) for t in s.defect_types)}。"
+        head = f"共 {len(s.defects)} 处：" if len(s.defects) > 1 else ""
+        return head + "，".join(parts) + "。"
+
+    def _where_suffix(self, s: UnifiedSample) -> str:
+        """给 A_DISCRIMINATION_POS 用的后缀形式。"""
+        parts, seen = [], set()
+        for d in s.defects:
+            key = (d.type, d.region)
+            if key in seen or not d.region:
+                continue
+            seen.add(key)
+            parts.append(f"{self.tax.zh(d.type)}位于画面{d.region}")
+        if not parts:
+            return ""
+        if len(s.defects) > 1:
+            return f"，共 {len(s.defects)} 处：" + "，".join(parts)
+        return "，" + parts[0]
+
+    def _advisory(self, rng: random.Random) -> str:
+        """限定语：多个变体，且只在一部分样本上带。
+
+        每条都带同一句的话，模型会当成机械后缀复读，还白占 token。
+        """
+        if rng.random() > T.ADVISORY_RATE:
+            return ""
+        return rng.choice(T.ADVISORY_VARIANTS)
 
     def _pick_q(self, task: str, rng: random.Random, **fields) -> str:
         """从（种子 + 扩写）问法池里抽一条并填充。"""
@@ -229,7 +323,12 @@ class VQABuilder:
                 continue
             try:
                 rec = fn()
-            except Exception:
+            except Exception as e:
+                # 以前这里静默吞异常，结果模板里一个 .format 用错，
+                # 整类任务凭空消失都没人发现。现在记下来，strict 模式直接抛。
+                self.failures[f"{task}:{type(e).__name__}: {e}"] += 1
+                if self.cfg.strict:
+                    raise
                 rec = None
             if rec:
                 picked.append(rec)
@@ -279,6 +378,8 @@ class VQABuilder:
         if self._enabled("grounding_counterfactual"):
             out.append(("grounding_counterfactual",
                         lambda: self._t_grounding_counterfactual(s, rng)))
+        if self.ref_pool and self._enabled("pair_compare"):
+            out.append(("pair_compare", lambda: self._t_pair_compare(s, rng)))
         return out
 
     # ---------------------------------------------------------- 正常样本
@@ -296,6 +397,8 @@ class VQABuilder:
             out.append(("object_recognition", lambda: self._t_object(s, rng)))
         if self._enabled("multi_turn"):
             out.append(("multi_turn", lambda: self._t_multi_turn(s, rng, [])))
+        if self.ref_pool and self._enabled("pair_compare"):
+            out.append(("pair_compare", lambda: self._t_pair_compare(s, rng)))
         return out
 
     # ---------------------------------------------------------- 各任务实现
@@ -347,7 +450,8 @@ class VQABuilder:
                          defect_en=self.tax.en(t), **self._ctx(s))
         return self._rec(s, "grounding_counterfactual", "localization", q, "[]",
                          None, {"n_boxes": 0, "absent_type": t,
-                                "present_types": sorted(present)})
+                                "asked_defect_types": [t],
+                                "variant": "counterfactual"})
 
     def _t_referring(self, s, rng, loc) -> dict:
         positive = bool(loc) and rng.random() < 0.55
@@ -385,7 +489,9 @@ class VQABuilder:
                                  **self._ctx(s))
                 a = rng.choice(T.A_COUNT_ZERO).format(defect=self.tax.zh(t))
                 return self._rec(s, "counting", "localization", q, a, None,
-                                 {"count": 0, "target_type": t})
+                                 {"count": 0, "target_type": t,
+                                  "asked_defect_types": [t],
+                                  "variant": "counterfactual"})
         t = rng.choice(s.defect_types)
         same = [d for d in loc if d.type == t]
         if not same:
@@ -394,7 +500,8 @@ class VQABuilder:
         a = T.A_COUNT.format(n=len(same), defect=self.tax.zh(t),
                              json=self._boxes_json(s, same))
         return self._rec(s, "counting", "localization", q, a, None,
-                         {"count": len(same), "target_type": t})
+                         {"count": len(same), "target_type": t,
+                          "asked_defect_types": [t]})
 
     def _t_region_word(self, s, rng, loc) -> dict:
         d = rng.choice(loc)
@@ -404,23 +511,15 @@ class VQABuilder:
             defect=self.tax.zh(d.type), region=d.region or "中部",
             size=size_word(d.area_ratio))
         return self._rec(s, "region_word", "localization", q, a, None,
-                         {"region": d.region})
+                         {"region": d.region, "asked_defect_types": [d.type],
+                          "answer_defect_types": [d.type]})
 
     def _t_discrimination(self, s, rng) -> dict:
         q = self._pick_q("discrimination", rng, **self._ctx(s))
         if s.is_anomalous:
             names = "、".join(self.tax.zh(t) for t in s.defect_types)
-            regions = list(dict.fromkeys(d.region for d in s.defects if d.region))
-            # 多处并列时先给数量。"位于画面中下部、中上部"读着很怪，
-            # 而且丢了"到底几处"这个关键信息。
-            if len(s.defects) > 1 and regions:
-                where = f"，共 {len(s.defects)} 处，分别位于画面{'、'.join(regions)}"
-            elif regions:
-                where = f"，位于画面{regions[0]}"
-            else:
-                where = ""
             a = rng.choice(T.A_DISCRIMINATION_POS).format(
-                defect_list=names, where=where, **self._ctx(s))
+                defect_list=names, where=self._where_suffix(s), **self._ctx(s))
         else:
             a = rng.choice(T.A_DISCRIMINATION_NEG).format(**self._ctx(s))
         return self._rec(s, "discrimination", "recognition", q, a, None,
@@ -444,11 +543,12 @@ class VQABuilder:
         q = self._pick_q("classification_open", rng, **self._ctx(s))
         a = rng.choice(T.A_CLASSIFY_OPEN).format(defect=name, evidence=evidence)
         return self._rec(s, "classification_open", "recognition", q, a,
-                         None, {"target_type": t})
+                         None, {"target_type": t, "answer_defect_types": [t]})
 
     def _t_classify_mc(self, s, rng) -> dict:
+        role = self.tax.object_info(s.object_name).get("role")
         opts, correct = make_options(self.tax, s.defect_types, self.cfg.n_options,
-                                     rng, active=self.active)
+                                     rng, active=self.active, part_role=role)
         q = T.Q_CLASSIFY_MC.format(options=format_options(opts), **self._ctx(s))
         a = f"{correct}. {opts['ABCDEF'.index(correct)]}"
         return self._rec(s, "classification_mc", "recognition", q, a, None,
@@ -483,16 +583,17 @@ class VQABuilder:
         if info:
             name = f"{name}（{info['zh']}）"
         q = self._pick_q("severity_action", rng, **self._ctx(s))
-        a = T.A_SEVERITY.format(
+        a = rng.choice(T.A_SEVERITY).format(
             severity=self.tax.severity_zh(d.severity),
             severity_desc=self.tax.severity_desc(d.severity),
             defect=name, region=d.region or "中部",
             size=size_word(d.area_ratio),
-            action=info.get("action") or self.tax.action(d.type))
-        # A_SEVERITY 末尾自带 ADVISORY_SUFFIX：严重度是按缺陷类型的规则映射
-        # 出来的，不是从图上判读的，也不来自任何真实手册条款，必须说清楚。
+            action=info.get("action") or self.tax.action(d.type),
+            advisory=self._advisory(rng))
         return self._rec(s, "severity_action", "recognition", q, a, None,
-                         {"severity": d.severity, "target_type": d.type})
+                         {"severity": d.severity, "target_type": d.type,
+                          "asked_defect_types": [d.type],
+                          "answer_defect_types": [d.type]})
 
     def _graded(self, s) -> Optional[object]:
         """取等级最高（最严重）的那处缺陷；没有分级标注则返回 None。"""
@@ -505,11 +606,45 @@ class VQABuilder:
     def _seen_qa(out: list, rec: dict) -> bool:
         return any(r["question"] == rec["question"] for r in out)
 
+    def _t_pair_compare(self, s, rng) -> dict:
+        """多图对比：正常件参考图 + 待检图 -> 指出差异。
+
+        机务实际的做法就是拿正常件比对着看。这类样本能教模型
+        "差异在哪"而不是"记住某类缺陷长什么样"，泛化更好。
+        参考图从同一 (数据源, 类别) 的正常图里取。
+        """
+        ref = self._reference_image(s, rng)
+        if not ref:
+            return None
+        q = self._pick_q("pair_compare", rng, **self._ctx(s))
+        if s.is_anomalous and s.defects:
+            items = "；".join(
+                f"画面{d.region or '中部'}出现{self.tax.zh(d.type)}"
+                for d in s.defects[:4])
+            a = rng.choice(T.A_PAIR_COMPARE_POS).format(items=items)
+            atypes = s.defect_types
+        else:
+            a = rng.choice(T.A_PAIR_COMPARE_NEG)
+            atypes = []
+        r = self._rec(s, "pair_compare", "compare", q, a, None,
+                      {"answer_defect_types": atypes,
+                       "reference_image": ref})
+        # 两张图：参考图在前，待检图在后
+        r["images"] = [ref, s.image_path]
+        return r
+
     def _t_uncertainty_many(self, s, rng, quality: str, k: int = 3) -> list:
-        """同一张糊图按不同缺陷类型问 k 次 —— 糊图本来就少，别浪费。"""
-        pool = [t for t in (self.active or self.tax.all_types())
-                if t != "other_anomaly"]
-        rng.shuffle(pool)
+        """同一张糊图按不同缺陷类型问 k 次 —— 糊图本来就少，别浪费。
+
+        **优先问图里确实存在的类型**：在劣化图上问一个根本不存在的类型，
+        "本来就没有"和"被挡住看不见"是混淆的，答"无法确认"说不清是哪种。
+        问一个确实存在但被遮挡/模糊掩盖的缺陷，"无法确认"才立得住。
+        """
+        present = [t for t in s.defect_types if t != "other_anomaly"]
+        others = [t for t in (self.active or self.tax.all_types())
+                  if t != "other_anomaly" and t not in present]
+        rng.shuffle(others)
+        pool = present + others
         return [self._t_uncertainty(s, rng, quality, t) for t in pool[:k]]
 
     def _t_uncertainty(self, s, rng, quality: str,
@@ -526,7 +661,9 @@ class VQABuilder:
         a = rng.choice(T.A_UNCERTAIN).format(
             reason=reason, fix=T.UNCERTAIN_FIX[quality], defect=self.tax.zh(t))
         return self._rec(s, "uncertainty", "recognition", q, a, None,
-                         {"image_quality": quality, "target_type": t})
+                         {"image_quality": quality, "target_type": t,
+                          "asked_defect_types": [t], "answer_defect_types": [],
+                          "degradation": s.meta.get("degradation", {})})
 
     def _t_grade(self, s, rng) -> dict:
         d = self._graded(s)
@@ -535,10 +672,11 @@ class VQABuilder:
         info = self.tax.grade_info(d.type, d.grade)
         q = self._pick_q("grade_assessment", rng, defect=self.tax.zh(d.type),
                          **self._ctx(s))
-        a = T.A_GRADE.format(
+        a = rng.choice(T.A_GRADE).format(
             grade_zh=info.get("zh", d.grade), grade_desc=info.get("desc", ""),
             region=d.region or "中部", size=size_word(d.area_ratio),
-            action=info.get("action") or self.tax.action(d.type))
+            action=info.get("action") or self.tax.action(d.type),
+            advisory=self._advisory(rng))
         return self._rec(s, "grade_assessment", "recognition", q, a,
                          None,
                          {"grade": d.grade, "target_type": d.type,
@@ -550,17 +688,24 @@ class VQABuilder:
         t1q = self._pick_q("multi_turn", rng, **self._ctx(s))
         if s.is_anomalous:
             names = "、".join(self.tax.zh(t) for t in s.defect_types)
-            regions = list(dict.fromkeys(d.region for d in s.defects if d.region))
-            turns.append((t1q, f"有异常。可见{names}，位于画面"
-                               f"{'、'.join(regions) or '画面中'}。"))
+            turns.append((t1q, f"有异常。{self._where_phrase(s)}"))
             if loc:
                 turns.append((rng.choice(T.Q_MT_T2_POS), self._boxes_json(s, loc)))
             d = max(s.defects, key=lambda x: x.area_ratio)
-            turns.append((rng.choice(T.Q_MT_T3_POS), T.A_SEVERITY.format(
+            # 前文提到多处缺陷时，第三轮必须点名问哪一处 —— 否则"该缺陷"
+            # 指代不唯一，而答案只讲其中一个，等于教模型遇到歧义就默认挑第一个
+            # 并静默丢掉其余的。
+            if len(s.defect_types) > 1:
+                t3q = rng.choice(T.Q_MT_T3_MANY).format(
+                    defect=self.tax.zh(d.type))
+            else:
+                t3q = rng.choice(T.Q_MT_T3_ONE)
+            turns.append((t3q, rng.choice(T.A_SEVERITY).format(
                 severity=self.tax.severity_zh(d.severity),
                 severity_desc=self.tax.severity_desc(d.severity),
                 defect=self.tax.zh(d.type), region=d.region or "中部",
-                size=size_word(d.area_ratio), action=self.tax.action(d.type))))
+                size=size_word(d.area_ratio), action=self.tax.action(d.type),
+                advisory=self._advisory(rng))))
         else:
             turns.append((t1q, rng.choice(T.A_DISCRIMINATION_NEG).format(
                 **self._ctx(s))))

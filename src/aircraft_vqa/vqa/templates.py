@@ -18,41 +18,86 @@
 
 # ---------------------------------------------------------------- system
 
-# 定位族：契约要写死，坐标约定要明确
-SYSTEM_GROUNDING = (
+# ！system 按**输出格式**绑定，不按任务语义族绑定。
+#
+# 踩过两次的坑：第一次全局一把梭，第二次按 localization/recognition 分。
+# 第二次仍然错，因为 localization 里混着两种输出格式 —— grounding_* 输出纯
+# JSON，而 referring_region/region_word 输出自然语言。结果 4 个定位任务里
+# 3 个违反自己的 system。契约是关于**输出长什么样**的，跟任务语义无关。
+
+SYSTEM_JSON_ONLY = (
     "你是一名民航机务维修视觉检查助手。\n"
     "输出边界框时使用 JSON 数组，每项形如 "
     '{"bbox_2d": [x1, y1, x2, y2], "label": "缺陷类型"}。\n'
     "坐标已归一化到 0-1000 区间，原点在图像左上角。\n"
-    "图中不存在被问及的目标时，输出 []，不附加任何解释。"
+    "只输出该 JSON 数组，不附加任何解释。图中不存在被问及的目标时，输出 []。"
 )
 
-# 识别族：可以有文字，但要求给出可核对的事实
-SYSTEM_INSPECT = (
+SYSTEM_TEXT = (
     "你是一名民航机务维修视觉检查助手，负责在飞机蒙皮、壁板、紧固件等结构件的"
     "检查照片中发现并描述异常。\n"
     "回答只陈述图像中可核对的事实：缺陷类型、位置、数量、范围。\n"
-    "图像模糊、遮挡或过曝导致无法确认时，直接说明无法确认并建议补拍，不要臆测。"
+    "图像模糊、遮挡或过曝导致无法确认时，直接说明无法确认并建议如何补拍，"
+    "不要臆测。"
 )
 
-# 多轮：额外强调承接上文
+SYSTEM_TEXT_THEN_JSON = (
+    "你是一名民航机务维修视觉检查助手。\n"
+    "回答分两部分：先用一句话给出结论（如数量），再另起一行给出 JSON 数组，"
+    '每项形如 {"bbox_2d": [x1, y1, x2, y2], "label": "缺陷类型"}。\n'
+    "坐标已归一化到 0-1000 区间，原点在图像左上角。\n"
+    "没有符合条件的目标时，JSON 部分输出 []。"
+)
+
 SYSTEM_DIALOG = (
-    "你是一名民航机务维修视觉检查助手。用户会围绕同一张检查照片连续追问，"
-    "后续提问中的指代（如「它」「该缺陷」）均指向前文已确认的对象。\n"
+    "你是一名民航机务维修视觉检查助手。用户会围绕同一张检查照片连续追问。\n"
+    "需要给坐标时输出 JSON 数组，每项形如 "
+    '{"bbox_2d": [x1, y1, x2, y2], "label": "缺陷类型"}，坐标归一化到 0-1000；'
+    "其余问题用简短自然语言回答。\n"
     "回答只陈述图像中可核对的事实；无法确认时直接说明，不要臆测。"
 )
 
-SYSTEM_BY_FAMILY = {
-    "localization": SYSTEM_GROUNDING,
-    "recognition": SYSTEM_INSPECT,
+# 输出格式 -> system。meta 里会带 output_format，质检据此自动校验答案形态。
+SYSTEM_BY_OUTPUT = {
+    "json_only": SYSTEM_JSON_ONLY,
+    "text": SYSTEM_TEXT,
+    "text_then_json": SYSTEM_TEXT_THEN_JSON,
     "dialog": SYSTEM_DIALOG,
 }
 
-# 处置建议的统一限定语 —— 严重度来自类型规则而非图像判读，必须说清楚
-ADVISORY_SUFFIX = (
-    "（以上为基于外观的初步判断，实际处置须以该机型现行 AMM/SRM 条款"
-    "和持照人员的现场评估为准。）"
-)
+# 任务 -> 输出格式。新增任务时必须在这里登记，否则构建器会报错。
+OUTPUT_FORMAT = {
+    "grounding_single": "json_only",
+    "grounding_all": "json_only",
+    "grounding_negative": "json_only",
+    "grounding_counterfactual": "json_only",
+    "counting": "text_then_json",
+    "referring_region": "text",
+    "region_word": "text",
+    "discrimination": "text",
+    "classification_open": "text",
+    "classification_mc": "text",
+    "description": "text",
+    "severity_action": "text",
+    "object_recognition": "text",
+    "grade_assessment": "text",
+    "uncertainty": "text",
+    "pair_compare": "text",
+    "multi_turn": "dialog",
+}
+
+# 处置建议的限定语。**准备多个变体，且只在一部分样本上出现** ——
+# 每条都带同一句，模型会当成机械后缀复读，白占 token。
+ADVISORY_VARIANTS = [
+    "（以上为基于外观的初步判断，实际处置须以该机型现行 AMM/SRM 条款和"
+    "持照人员的现场评估为准。）",
+    "以上仅为外观初判，具体限度请查该机型 SRM 相应章节。",
+    "最终判定以持照人员现场检查和适用手册为准。",
+    "该结论基于单张照片，建议结合实物复查后再定。",
+    "具体可接受限度以该机型现行手册为准。",
+    "注：仅凭外观照片无法替代手册规定的检测方法。",
+]
+ADVISORY_RATE = 0.5      # 只在一半样本上带
 
 # ---------------------------------------------------------------- 定位
 
@@ -115,7 +160,7 @@ Q_REGION_WORD = [
 ]
 
 A_REGION_WORD = [
-    "{defect}位于画面{region}，缺陷范围{size}。",
+    "{defect}位于画面{region}，{size}。",
     "在画面{region}可以看到{defect}。",
     "画面{region}那一处就是{defect}。",
 ]
@@ -140,6 +185,8 @@ Q_DISCRIMINATION = [
 ]
 
 # 答案里不能出现裸的"是/否" —— 问法池里"是否合格"与"有没有异常"极性相反。
+# {where} 由构建器拼成"，共 N 处：裂纹位于画面右下，腐蚀锈蚀位于画面左下"
+# 这种一一对应的形式。"可见裂纹、腐蚀锈蚀，位于右下、左下"让人对不上号。
 A_DISCRIMINATION_POS = [
     "存在异常。可见{defect_list}{where}。",
     "不合格。该{obj}上发现{defect_list}{where}，需要记录并进一步评估。",
@@ -192,11 +239,17 @@ Q_SEVERITY = [
 
 # 严重度是按缺陷类型的规则映射出来的，不是从图上判断的 —— 措辞必须是
 # "通常按…处理"这种建议口吻，且带限定语，不能写成适航结论。
-A_SEVERITY = (
-    "缺陷类型：{defect}，位于画面{region}，范围{size}。\n"
-    "严重程度：{severity}（{severity_desc}）。\n"
-    "建议处置方向：{action}\n" + ADVISORY_SUFFIX
-)
+# 三种组织方式：三段式 / 连贯段落 / 先结论后依据。
+# 全都用同一个三段式模板的话，模型学到的是句式而不是内容。
+A_SEVERITY = [
+    ("缺陷类型：{defect}，位于画面{region}，{size}。\n"
+     "严重程度：{severity}（{severity_desc}）。\n"
+     "建议处置方向：{action}{advisory}"),
+    ("画面{region}这处{defect}{size}，{severity_desc}，"
+     "严重程度算{severity}。处理上{action}。{advisory}"),
+    ("按{severity}处理。画面{region}这处是{defect}，{size}；"
+     "该类缺陷{severity_desc}。具体做法：{action}{advisory}"),
+]
 
 Q_OBJECT = [
     "图中被检查的是什么部件？",
@@ -266,11 +319,14 @@ Q_GRADE = [
     "这处{defect}算严重吗？到哪一级了？",
 ]
 
-A_GRADE = (
-    "等级判定：{grade_zh}。\n"
-    "外观特征：{grade_desc}；位于画面{region}，范围{size}。\n"
-    "建议处置方向：{action}\n" + ADVISORY_SUFFIX
-)
+A_GRADE = [
+    ("等级判定：{grade_zh}。\n"
+     "外观特征：{grade_desc}；位于画面{region}，{size}。\n"
+     "建议处置方向：{action}{advisory}"),
+    ("画面{region}这处已经到{grade_zh}了 —— {grade_desc}，{size}。"
+     "{action}。{advisory}"),
+    ("{grade_desc}，{size}，因此判为{grade_zh}。建议{action}{advisory}"),
+]
 
 # ---------------------------------------------------------------- 多轮
 
@@ -290,12 +346,42 @@ Q_MT_T2_NEG = [
     "请复查该图，标出所有异常区域（JSON 格式）。",
     "再仔细看一遍，真的没有吗？有的话框出来。",
 ]
-Q_MT_T3_POS = [
+# 前文只有一处缺陷时用这组（指代唯一）
+Q_MT_T3_ONE = [
     "该缺陷的严重程度如何，应如何处理？",
     "请说明该缺陷需要立即处理，还是可以推迟到下次定检。",
     "请给出该缺陷的处置方向。",
     "那这个要紧吗？",
 ]
+# 前文有多处缺陷时必须点名，否则"该缺陷"指代不唯一 ——
+# 用模糊指代配只讲其中一个的答案，等于教模型遇到歧义就默认挑第一个、
+# 并静默丢掉其余的。
+Q_MT_T3_MANY = [
+    "其中的{defect}严重程度如何，应如何处理？",
+    "先说{defect}这一处，要紧吗？怎么处理？",
+    "请单独说明{defect}的处置方向。",
+]
+
+# ---------------------------------------------------------------- 多图对比
+
+# 机务实际就是拿正常件比对着看。MMAD 与 Anomaly-OV 都强调这个能力。
+Q_PAIR_COMPARE = [
+    "第一张是同型号的正常件参考图，第二张是待检件。请对比两图，"
+    "指出待检件上与参考图不一致的地方。",
+    "对照参考图（第一张）检查第二张，说明差异出现在哪里、属于什么问题。",
+    "这两张图，后一张相比前一张有什么不对的地方？",
+]
+
+A_PAIR_COMPARE_POS = [
+    "与参考图相比，待检件上{items}。",
+    "差异在于：{items}。其余部位与参考图一致。",
+    "对比可见{items}；参考图对应位置无此现象。",
+]
+A_PAIR_COMPARE_NEG = [
+    "两图未见实质差异，待检件状态与参考图一致。",
+    "对比下来没有发现异常，待检件与参考图相符。",
+]
+
 
 # ---------------------------------------------------------------- 问法池
 
@@ -315,6 +401,7 @@ QUESTIONS = {
     "grade_assessment": Q_GRADE,
     "uncertainty": Q_UNCERTAIN,
     "multi_turn": Q_MT_T1,
+    "pair_compare": Q_PAIR_COMPARE,
 }
 
 ALLOWED_PLACEHOLDERS = {
@@ -333,6 +420,7 @@ ALLOWED_PLACEHOLDERS = {
     "grade_assessment": {"defect", "obj", "ctx"},
     "uncertainty": {"defect", "obj", "ctx"},
     "multi_turn": {"obj", "ctx"},
+    "pair_compare": {"obj", "ctx"},
 }
 REQUIRED_PLACEHOLDERS = {
     "grade_assessment": {"defect"},

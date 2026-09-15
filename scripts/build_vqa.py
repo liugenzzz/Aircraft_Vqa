@@ -137,8 +137,26 @@ def main() -> int:
     print(f"[qbank] 扩写问法 {n_bank} 条"
           + ("" if n_bank else "（未生成，仅用种子问法；见 scripts/gen_question_bank.py）"))
     builder = VQABuilder(bcfg, tax)
+
+    # 多图对比要一张同类正常件参考图。按 (数据源, 类别) 收集正常图，
+    # 只有真的有正常图的类别才会产出 pair_compare 样本。
+    from collections import defaultdict as _dd
+    ref_pool = _dd(list)
+    for s_ in samples:
+        if not s_.is_anomalous:
+            ref_pool[(s_.dataset, s_.category)].append(s_.image_path)
+    ref_pool = {k: v for k, v in ref_pool.items() if len(v) >= 3}
+    builder.set_reference_pool(ref_pool)
+    if ref_pool:
+        print(f"[pair] 参考图池：{len(ref_pool)} 个类别，"
+              f"共 {sum(len(v) for v in ref_pool.values())} 张正常图")
+
     records = list(builder.build_many(samples))
     print(f"[build] 生成 {len(records)} 条原始问答")
+    if builder.failures:
+        print("[build] ⚠ 模板异常（这些任务被静默跳过了，务必查）：")
+        for k, v in builder.failures.most_common(8):
+            print(f"        {v:5d}x  {k}")
 
     records = dedup(records)
     print(f"[dedup] 保留 {len(records)} 条")

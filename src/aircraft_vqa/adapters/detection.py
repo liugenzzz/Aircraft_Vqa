@@ -68,7 +68,8 @@ class CocoAdapter(BaseAdapter):
                     category=cat_name, split=split, boxes=boxes or None,
                     box_labels=labels or None,
                     meta={"coco_image_id": im["id"],
-                          **({"image_quality": im["quality"]}
+                          **({"image_quality": im["quality"],
+                              "degradation": im.get("degradation") or {}}
                              if im.get("quality") else {})})
                 if s:
                     yield s

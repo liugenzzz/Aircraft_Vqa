@@ -36,7 +36,7 @@ def _check_turns(r: dict) -> list:
         # 带 JSON 的那一轮按定位规则查
         if "[" in t["answer"]:
             probe = dict(r, task="grounding_all", answer=t["answer"],
-                         label=r.get("label"))
+                         image_status=r.get("image_status"))
             probe.pop("turns", None)
             if r.get("yes_no") == "no":
                 probe["task"] = "grounding_negative"
@@ -57,18 +57,54 @@ def check_record(r: dict, check_image: bool = False) -> list:
     if re.search(r"\{[a-z_]+\}", r.get("answer", "")):
         errs.append("unfilled_placeholder_a")
 
-    if check_image and not os.path.exists(r.get("image", "")):
-        errs.append("image_missing")
+    if check_image:
+        for p in (r.get("images") or [r.get("image", "")]):
+            if not os.path.exists(p):
+                errs.append("image_missing")
+                break
+
+    # 多图条目：图片 token 数必须和图片数一致，否则训练时直接报错
+    if r.get("images"):
+        n_tok = r.get("question", "").count("<image>")
+        if n_tok and n_tok != len(r["images"]):
+            errs.append("image_token_count_mismatch")
 
     task = r.get("task", "")
 
-    # 定位族的 system 写死了"不附加任何解释"，答案就必须是纯 JSON。
-    # 之前漏了这条检查，结果 grounding_negative 答成了 "[]\n未见划伤…"，
-    # 等于用数据教模型不遵循 system。
-    if task.startswith("grounding"):
-        stripped = r.get("answer", "").strip()
-        if not (stripped.startswith("[") and stripped.endswith("]")):
-            errs.append("grounding_answer_not_pure_json")
+    # 按 output_format 自动校验答案形态。这是踩了两次坑之后加的硬闸：
+    # system 说什么格式，答案就必须是什么格式。
+    ofmt = r.get("output_format")
+    ans = r.get("answer", "").strip()
+    if ofmt == "json_only":
+        if not (ans.startswith("[") and ans.endswith("]")):
+            errs.append("not_pure_json")
+        else:
+            try:
+                json.loads(ans)                 # 整串必须能解析，不能有多余字符
+            except Exception:
+                errs.append("not_pure_json")
+    elif ofmt == "text":
+        if "bbox_2d" in ans:
+            errs.append("text_format_has_boxes")
+    elif ofmt == "text_then_json":
+        if "\n" not in ans or not ans.rsplit("\n", 1)[-1].strip().startswith("["):
+            errs.append("not_text_then_json")
+
+    # system 必须与 output_format 对应
+    if ofmt and r.get("system"):
+        from .vqa.templates import SYSTEM_BY_OUTPUT
+        if r["system"] != SYSTEM_BY_OUTPUT.get(ofmt, r["system"]):
+            errs.append("system_format_mismatch")
+
+    # 幻觉闸门：答案断言存在的缺陷必须是图里真有的
+    img_t = set(r.get("image_defect_types") or [])
+    ans_t = set(r.get("answer_defect_types") or [])
+    if ans_t and img_t and not ans_t <= img_t:
+        errs.append("answer_asserts_absent_defect")
+
+    # 不确定样本必须有物理依据 —— 没有劣化证据就说"看不清"，是在教模型耍赖
+    if task == "uncertainty" and not (r.get("degradation") or r.get("image_quality")):
+        errs.append("uncertainty_without_evidence")
 
     # 答案不能提问题里没出现过的缺陷名（负样本模板复用正样本变量槽的典型症状）
     if task in ("grounding_negative", "grounding_counterfactual"):
@@ -93,7 +129,7 @@ def check_record(r: dict, check_image: bool = False) -> list:
             if task in ("grounding_negative", "grounding_counterfactual") and boxes:
                 errs.append("negative_with_boxes")
             if task in ("grounding_single", "grounding_all") and not boxes \
-                    and r.get("label") == "anomalous":
+                    and r.get("image_status") == "anomalous":
                 errs.append("positive_without_boxes")
             hi = 1000 if r.get("coord_mode", "norm1000") == "norm1000" else None
             for b in boxes:
@@ -124,14 +160,6 @@ def check_record(r: dict, check_image: bool = False) -> list:
         opts = r.get("options") or []
         if len(set(opts)) != len(opts):
             errs.append("duplicate_options")
-
-    # system 必须和任务族匹配 —— 定位族用识别族的 system 就会出现
-    # "契约说只输出 JSON、实际答案带解释"的错配
-    fam, sysmsg = r.get("family"), r.get("system", "")
-    if fam and sysmsg:
-        from .vqa.templates import SYSTEM_BY_FAMILY
-        if sysmsg != SYSTEM_BY_FAMILY.get(fam, sysmsg):
-            errs.append("system_family_mismatch")
 
     if task == "discrimination":
         yn = r.get("yes_no")

@@ -93,29 +93,39 @@ class_map: {1: good, 2: fair, 3: poor, 4: severe}
 定位和"有无异常"照常使用，只是不再声称知道它具体属于哪一类。
 想全做就把 `active_defect_types` 置空。
 
-## 5. system 按任务族绑定
+## 5. system 按「输出格式」绑定
 
-三层职责分开，**system 不是全局一把梭**：
+三层职责分开：
 
 | 层 | 只负责 |
 |---|---|
-| system | 角色 + 输出契约 + 坐标约定，**按任务族绑定** |
+| system | 角色 + 输出契约 + 坐标约定，**按输出格式绑定** |
 | user | 任务本身，同一任务备大量改写变体 |
 | assistant | 答案；答案的多样性比问法的多样性更重要 |
 
-三套 system（`templates.SYSTEM_BY_FAMILY`）：
+**这里连着踩了两个坑，值得记下来。**
 
-- **定位族**：写死坐标契约与"图中不存在被问及的目标时，输出 `[]`，不附加任何解释"
-- **识别族**：要求只陈述可核对的事实；无法确认时直接说明
-- **多轮族**：额外强调后续提问中的指代承接前文
+第一次：全局一把梭，一套 system 管所有任务 —— 定位类答案带解释，违反契约。
 
-**踩过的坑**：原来定位族的 system 说"不附加任何解释"，答案却是
-`[]\n该检查口盖外观检查未见划伤或其他可见缺陷。` —— 多了一句说明，
-直接违反自己的 system。这种数据教出来的模型就是不遵循 system，
-而 system following 恰恰是部署时最依赖的能力。
+第二次：改成按任务语义族（localization / recognition）绑 —— **还是错**。
+因为 `localization` 里混着两种输出格式：`grounding_*` 输出纯 JSON，
+而 `referring_region` / `region_word` 输出自然语言。结果 4 个定位任务里
+3 个违反自己的 system。
 
-现在**定位族的答案强制纯 JSON**，质检里有 `grounding_answer_not_pure_json`
-这一项把关，QC 通不过的直接丢。
+**契约是关于"输出长什么样"的，跟任务语义无关。** 现在按输出格式分三套
+（`templates.SYSTEM_BY_OUTPUT`）：
+
+| 输出格式 | 任务 | 契约 |
+|---|---|---|
+| `json_only` | `grounding_single/all/negative/counterfactual` | 只输出 JSON 数组，不附加任何解释 |
+| `text_then_json` | `counting` | 先一句话结论，另起一行给 JSON |
+| `text` | `referring_region` / `region_word` / `discrimination` / `classification_*` / `description` / `severity_action` / `grade_assessment` / `uncertainty` / `pair_compare` | 自然语言，不出现 bbox |
+| `dialog` | `multi_turn` | 需要坐标时给 JSON，其余自然语言 |
+
+每个任务必须在 `templates.OUTPUT_FORMAT` 里登记，**漏登记会直接报错**，
+不会悄悄用错 system。条目的 `meta.output_format` 带着这个标记，
+质检据此**自动校验答案形态**：`json_only` 的答案必须整串 `json.loads()` 成功，
+`text` 的答案不得出现 `bbox_2d`。
 
 ## 6. 两大任务族与 15 个子任务
 
@@ -162,6 +172,26 @@ class_map: {1: good, 2: fair, 3: poor, 4: severe}
 | `grade_assessment` | 有序程度分级判定（见上一节），只在源数据带等级时触发 |
 | `uncertainty` | 成像模糊/遮挡/过曝时答"无法确认，建议补拍" |
 
+### meta 的三个缺陷字段必须分开
+
+`defect_types` 一个字段混着三件事，会让所有分层评测失效。现在拆成：
+
+```json
+"image_defect_types":  ["fastener_missing"],   // 图里客观有什么
+"asked_defect_types":  ["fastener_loose"],     // 这条问的是什么
+"answer_defect_types": []                      // 答案断言存在的是什么
+```
+
+有了这三个，**幻觉校验可以完全自动化**：
+`answer_defect_types ⊆ image_defect_types` 必须成立，违反的就是幻觉数据，
+质检里 `answer_asserts_absent_defect` 直接拦下。
+
+另外原来的 `label: "anomalous"` 改名为 `image_status` ——
+它和 bbox 里的 `"label": "凹坑"` 同名不同义，下游脚本极易搞混。
+
+反事实变体（问一个不存在的类型）在 `meta.variant` 里标 `counterfactual`，
+这样统计"计数任务准确率"时不会把"反事实拒答"混进来污染任务分布。
+
 ### 三类关键负样本
 
 **① 反事实负样本（`grounding_counterfactual`）**
@@ -181,8 +211,30 @@ class_map: {1: good, 2: fair, 3: poor, 4: severe}
 **③ 不确定样本（`uncertainty`）**
 system 里写了"无法确认时直接说明，不要臆测"，就必须有样本把这件事教出来，
 否则那句话是空指令 —— 模型照样对糊图给出自信的框。
-合成器按 `--degraded-frac` 刻意产出模糊/遮挡/过曝/欠曝的图并标记 `quality`，
-构建器对这类图**只出"无法确认"样本**，不再产出任何定位答案。
+
+**但"看不清"必须有物理依据，否则是在教模型耍赖** —— 该给答案的时候说看不清，
+在机务场景是负向能力，比没有这类样本更糟。所以：
+
+- 合成器按 `--degraded-frac` 主动施加模糊/遮挡/过曝/欠曝，
+  并把**劣化参数写进标注**（`degradation: {type: "occlusion", ratio: 0.42}`），
+  一路带到 VQA 的 meta 里 —— 这张图真的被遮挡了是**可审计的事实**；
+- 只有带劣化证据的样本才允许生成 uncertainty，
+  质检里 `uncertainty_without_evidence` 把关；
+- 劣化图**只出"无法确认"样本**，不再产出任何定位答案；
+- **优先问图里确实存在的缺陷**：在劣化图上问一个根本不存在的类型，
+  "本来就没有"和"被挡住看不见"是混淆的，答"无法确认"说不清是哪种；
+- 补救措施与成因匹配（遮挡→移开或换角度，欠曝→补充照明）。
+
+接真实数据时没有合成参数可用，应该用 Laplacian 方差、局部对比度、
+过曝像素占比这类指标筛出真正成像差的图，再打标记。
+
+### 多图对比（`pair_compare`）
+
+机务实际的做法就是拿正常件比对着看，MMAD 和 Anomaly-OV 都强调这个能力。
+构建时按 `(数据源, 类别)` 收集正常图组成参考图池，产出
+`[正常参考图, 待检图] → 指出差异区域` 的两图样本。
+导出时 `images` 有两个元素，`<image>` token 数量与之匹配（质检会校验）。
+没有参考图池的数据源不会产出这类样本。
 
 ### 计数要覆盖边界
 
@@ -421,11 +473,19 @@ ShareGPT 导出条目形如：
 **带 bbox 的原图 + 叠了 GT mask 的原图 + 一张对应的正常参考图**。
 这个 trick 能显著降低生成描述时的幻觉。本仓库的 mask 和正常图都是现成的。
 
-### 14.2 面积三档词僵硬
+### 14.2 面积档位词信息量低
 
-"范围较小 / 中等大小 / 较大"是 bbox 面积占比算出来的三档词，
-对模型没什么信息量。真正有用的是形态描述（点状/条状/片状、边缘是否翻起），
+"范围极小/较小/中等/较大/很大"是 bbox 面积占比算出来的五档词（句式已统一），
+对模型信息量有限。真正有用的是形态描述（点状/条状/片状、边缘是否翻起），
 但那需要 14.1 里的 VLM 看图，模板给不了。
+
+### 14.2b 严重度仍然是类型规则映射
+
+`severity_action` 的等级来自缺陷类型的规则表，图像里的实际严重程度
+（裂纹长度、腐蚀深度）没有参与。模型学到的还是"看到裂纹两个字就说严重"。
+已做的缓解：离散事件型缺陷不按面积浮动（避免"缺一颗螺丝=轻微"这种错），
+面状缺陷按面积浮动，带有序等级的源（VT 腐蚀集）直接用等级。
+根治同样要靠 14.1 的 VLM 看图。
 
 ### 14.3 合成数据的 domain gap
 

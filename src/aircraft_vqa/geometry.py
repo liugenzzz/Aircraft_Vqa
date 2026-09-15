@@ -130,17 +130,24 @@ def region_word(bbox, w: int, h: int) -> str:
 
 
 def size_word(area_ratio: float) -> str:
-    if area_ratio <= 0:
-        return "极小"
+    """面积占比 -> 统一句式的范围词。
+
+    返回的是完整短语（"范围较小"而不是"较小"），模板里直接用 {size}。
+    之前"范围极小/范围较小/中等大小/范围较大"语法结构都不一样，读着别扭。
+
+    注意：这只是 bbox 面积的机械映射，信息量有限。真正有价值的是形态描述
+    （点状/条状/片状、边缘是否翻起），那需要让 VLM 真的看图，模板给不了。
+    见 docs/02_pipeline.md 的"已知局限"。
+    """
     if area_ratio < 0.002:
-        return "极小"
+        return "范围极小"
     if area_ratio < 0.01:
-        return "较小"
+        return "范围较小"
     if area_ratio < 0.05:
-        return "中等大小"
+        return "范围中等"
     if area_ratio < 0.15:
-        return "较大"
-    return "大面积"
+        return "范围较大"
+    return "范围很大"
 
 
 def severity_from_area(base: str, area_ratio: float) -> str:
