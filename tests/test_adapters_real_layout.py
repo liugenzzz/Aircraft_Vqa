@@ -753,3 +753,36 @@ def test_loco_defect_names_json_still_wins(tmp_path):
     raws = {d.type_raw for s in samples for d in s.defects}
     assert "screw_too_long" in raws, raws
     assert "missing_nut" in raws, raws
+
+
+def test_real_iad_class_codes_are_mapped():
+    """Real-IAD 用拼音缩写当类别码，不映射的话 200 个框全落 other_anomaly。"""
+    tax = get_taxonomy()
+    assert tax.map_defect("HS") == "scratch"        # 划伤
+    assert tax.map_defect("AK") == "dent"           # 凹坑
+    assert tax.map_defect("BX") == "dent"           # 变形
+    assert tax.map_defect("ZW") == "contamination"  # 脏污
+    assert tax.map_defect("YW") == "contamination"  # 异物
+    # 大小写不能影响
+    assert tax.map_defect("hs") == "scratch"
+
+
+def test_missing_part_is_not_fastener_missing():
+    """QS（缺失）在 Real-IAD 指端子排/电路板少了元件，不是少了颗紧固件。
+
+    合并成 fastener_missing 会在电路板照片上生成"紧固件缺失"这种明显
+    不对的答案 —— 标签看着有了，内容是错的。
+    """
+    tax = get_taxonomy()
+    assert tax.map_defect("QS") == "part_missing"
+    assert tax.zh("part_missing") == "零件缺失"
+    assert tax.map_defect("QS") != tax.map_defect("missing-head")
+    assert tax.map_defect("missing-head") == "fastener_missing"
+    # 离散事件型，严重度不能按面积浮动
+    assert tax.area_scales_severity("part_missing") is False
+
+
+def test_unverified_code_stays_unmapped():
+    """CH 还没看过图，宁可留在 other_anomaly 也不猜 ——
+    猜错了不报错，训练完才发现模型把一类缺陷叫成另一类。"""
+    assert get_taxonomy().map_defect("CH") == "other_anomaly"

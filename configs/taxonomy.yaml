@@ -94,7 +94,10 @@ defect_types:
     en: dent
     group: structure
     severity_default: major
-    aliases: [dent, dented, dint, depression, deformation, bent, deformed, bend]
+    # AK 是 Real-IAD 的类别码，拼音缩写：凹坑（Ao Keng）。
+    # BX（变形 Bian Xing）也归这里 —— 本次抽样没出现，先备着。
+    aliases: [dent, dented, dint, depression, deformation, bent, deformed, bend,
+              ak, bx]
     action: 测量凹坑深径比，对照 SRM 可接受限度判定打磨、堆修或换件
 
   scratch:
@@ -102,8 +105,9 @@ defect_types:
     en: scratch
     group: surface
     severity_default: minor
+    # HS 是 Real-IAD 的类别码，拼音缩写：划伤（Hua Shang）。
     aliases: [scratch, scratches, scratch_head, scratch_neck, scratched, scuff,
-              abrasion, gouge, nick]
+              abrasion, gouge, nick, hs]
     action: 抛光去除应力集中源并补涂保护涂层
 
   paint_peeling:
@@ -134,9 +138,10 @@ defect_types:
     severity_default: minor
     # color 是 MVTec metal_nut 的官方类名：表面有异色斑块（沾色/污渍）。
     # 不是漆层剥落也不是锈蚀，归到"污染异物"最贴。
+    # ZW（脏污 Zang Wu）、YW（异物 Yi Wu）是 Real-IAD 的类别码。
     aliases: [contamination, contaminated, foreign_object, fod, stain, dirt, grease,
               leak, oil_leak, spot, inclusion, spots, color, discoloration,
-              discolored]
+              discolored, zw, yw]
     action: 清洁并溯源渗漏点，确认非液压/燃油渗漏
 
   misalignment:
@@ -164,6 +169,20 @@ defect_types:
     severity_default: major
     aliases: [extra_cable, 1_additional_pushpin, additional, redundant, duplicate]
     action: 移除多余件并排查装配工序，防止 FOD
+
+  part_missing:
+    # 离散事件型缺陷：缺一颗螺丝、一道裂纹，面积必然很小，
+    # 但严重度跟面积无关。禁止按面积占比上下浮动。
+    area_scales_severity: false
+    zh: 零件缺失
+    en: missing part
+    group: structure
+    severity_default: major
+    # 和 fastener_missing 分开：QS（缺失 Que Shi）在 Real-IAD 里指
+    # 端子排/电路板上少了个元件，不是少了颗紧固件。合并会在电路板照片上
+    # 生成"紧固件缺失"这种明显不对的答案。
+    aliases: [qs, missing_part, part_missing, component_missing, absent_part]
+    action: 核对装配清单确认缺件件号，补装后复查相邻工序
 
   other_anomaly:
     zh: 异常
