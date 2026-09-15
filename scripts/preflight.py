@@ -23,6 +23,7 @@ import _bootstrap  # noqa: F401
 import yaml
 
 from aircraft_vqa.adapters import build_adapter
+from aircraft_vqa.config import load_dataset_configs
 from aircraft_vqa.taxonomy import get_taxonomy
 
 
@@ -97,11 +98,7 @@ def main() -> int:
     args = ap.parse_args()
 
     tax = get_taxonomy(os.path.abspath(args.taxonomy))
-    specs = []
-    for cp in (args.config or ["configs/datasets.yaml"]):
-        if os.path.exists(cp):
-            specs += (yaml.safe_load(open(cp, encoding="utf-8")) or {}
-                      ).get("datasets") or []
+    specs, _ = load_dataset_configs(args.config or ["configs/datasets.yaml"])
     data_root = os.path.expanduser(args.data_root)
     limit = args.sample or 10 ** 9
 

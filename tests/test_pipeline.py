@@ -488,30 +488,38 @@ def test_cap_class_imbalance_noop_when_already_balanced():
 
 # ------------------------------------------------------------------ 配置自动启用
 def test_enable_in_config_only_flips_matching_entry(tmp_path):
+    """启用只作用于点名的源，且入库模板一个字节都不能动。"""
+    from aircraft_vqa.config import load_dataset_configs
     da = _load_script(os.path.join("download", "download_all.py"))
     cfg = tmp_path / "datasets.yaml"
-    cfg.write_text(
-        "datasets:\n"
-        "  - name: visa\n"
-        "    adapter: visa\n"
-        "    enabled: false   # 注释要保住\n"
-        "  - name: mvtec_ad_screw\n"
-        "    adapter: mvtec_ad\n"
-        "    enabled: false\n", encoding="utf-8")
-    changed = da.enable_in_config(str(cfg), ["visa"])
-    text = cfg.read_text(encoding="utf-8")
-    assert changed == ["visa"]
-    assert "  - name: visa\n    adapter: visa\n    enabled: true\n" in text
-    # 没点名的条目原样不动
-    assert "  - name: mvtec_ad_screw\n    adapter: mvtec_ad\n    enabled: false\n" in text
+    body = ("datasets:\n"
+            "  - name: visa\n"
+            "    adapter: visa\n"
+            "    enabled: false   # 注释要保住\n"
+            "  - name: mvtec_ad_screw\n"
+            "    adapter: mvtec_ad\n"
+            "    enabled: false\n")
+    cfg.write_text(body, encoding="utf-8")
+
+    assert da.enable_in_config(str(cfg), ["visa"]) == ["visa"]
+    assert cfg.read_text(encoding="utf-8") == body, "入库模板被改动了"
+
+    # 叠上本地那份之后，启用状态才生效；没点名的依旧是关的
+    specs, _ = load_dataset_configs([str(cfg)])
+    assert {d["name"]: d.get("enabled") for d in specs} == {
+        "visa": True, "mvtec_ad_screw": False}
+    # 模板里的其他字段不能因为叠加而丢
+    assert [d for d in specs if d["name"] == "visa"][0]["adapter"] == "visa"
 
 
 def test_enable_in_config_is_idempotent(tmp_path):
     da = _load_script(os.path.join("download", "download_all.py"))
     cfg = tmp_path / "d.yaml"
-    cfg.write_text("  - name: visa\n    enabled: true\n", encoding="utf-8")
-    assert da.enable_in_config(str(cfg), ["visa"]) == []      # 已是 true，不重复改
-    assert cfg.read_text(encoding="utf-8") == "  - name: visa\n    enabled: true\n"
+    body = "datasets:\n  - name: visa\n    enabled: false\n"
+    cfg.write_text(body, encoding="utf-8")
+    assert da.enable_in_config(str(cfg), ["visa"]) == ["visa"]
+    assert da.enable_in_config(str(cfg), ["visa"]) == []   # 已是 true，不重复写
+    assert cfg.read_text(encoding="utf-8") == body
 
 
 def test_roboflow_downloader_parses_versions():

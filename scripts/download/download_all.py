@@ -516,30 +516,19 @@ def write_manual_manifest(root: str, srcs: list, out_path: str) -> None:
 
 
 def enable_in_config(config_path: str, names: list) -> list:
-    """把 datasets.yaml 里这些条目的 enabled 改成 true。
+    """把这些源标成 enabled —— 写进**本地那份**，不碰入库的 datasets.yaml。
 
-    只动匹配到的 `- name:` 块里的那一行 enabled，其他内容一字不改
-    （所以不走 yaml.dump，避免把注释和格式全洗掉）。
+    以前是直接改 datasets.yaml，结果每次 `git pull` 都撞上
+    "local changes would be overwritten"：下数据这个动作本身在改仓库文件。
+    现在落到 configs/datasets.local.yaml（已 gitignore），
+    加载时叠在模板上，本机状态和仓库内容彻底分开。
     """
-    if not names or not os.path.exists(config_path):
+    if not names:
         return []
-    with open(config_path, encoding="utf-8") as f:
-        lines = f.readlines()
-
-    changed, cur = [], None
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith("- name:"):
-            cur = stripped.split(":", 1)[1].strip()
-        elif stripped.startswith("enabled:") and cur in names:
-            if "false" in stripped:
-                indent = line[:len(line) - len(line.lstrip())]
-                lines[i] = f"{indent}enabled: true\n"
-                changed.append(cur)
-    if changed:
-        with open(config_path, "w", encoding="utf-8") as f:
-            f.writelines(lines)
-    return changed
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))), "src"))
+    from aircraft_vqa.config import set_enabled
+    return set_enabled(config_path, names, True)
 
 
 def print_table(root: str, srcs: list) -> None:
@@ -583,7 +572,7 @@ def main() -> int:
                      for n in s_.get("config_names", [])]
             done_cfg = enable_in_config(args.config, ready)
             if done_cfg:
-                print(f"\n已在 {args.config} 里启用：{'、'.join(done_cfg)}")
+                print(f"\n已启用（写入 configs/datasets.local.yaml，不入库）：{'、'.join(done_cfg)}")
         manual = [s for s in srcs if s["mode"] == "manual" and not _present(root, s)]
         if manual:
             write_manual_manifest(root, manual, manifest)
@@ -640,7 +629,7 @@ def main() -> int:
                  for n in s_.get("config_names", [])]
         done_cfg = enable_in_config(args.config, ready)
         if done_cfg:
-            print(f"\n已在 {args.config} 里启用：{'、'.join(done_cfg)}")
+            print(f"\n已启用（写入 configs/datasets.local.yaml，不入库）：{'、'.join(done_cfg)}")
 
     print("\n" + "=" * 60)
     print(f"已就绪 {len(done)}：{'、'.join(done) or '无'}")

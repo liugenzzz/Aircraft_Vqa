@@ -18,6 +18,7 @@ import yaml
 
 from aircraft_vqa.adapters import build_adapter
 from aircraft_vqa.schema import write_jsonl
+from aircraft_vqa.config import load_dataset_configs
 from aircraft_vqa.taxonomy import get_taxonomy
 
 
@@ -49,23 +50,10 @@ def main() -> int:
     args = ap.parse_args()
 
     configs = args.config or ["configs/datasets.yaml"]
-    specs, default_root = [], "~/data/raw"
-    for cp in configs:
-        if not os.path.exists(cp):
-            print(f"[warn] 配置不存在，跳过：{cp}")
-            continue
-        part = yaml.safe_load(open(cp, encoding="utf-8")) or {}
-        specs.extend(part.get("datasets") or [])
-        default_root = part.get("defaults", {}).get("data_root", default_root)
-    if not specs:
+    cfg_datasets, default_root = load_dataset_configs(configs)
+    if not cfg_datasets:
         print(f"没有读到任何数据源配置：{configs}")
         return 1
-    seen, cfg_datasets = set(), []
-    for sp in specs:                      # 同名条目后来者覆盖前者
-        if sp["name"] in seen:
-            cfg_datasets = [x for x in cfg_datasets if x["name"] != sp["name"]]
-        seen.add(sp["name"])
-        cfg_datasets.append(sp)
     cfg = {"datasets": cfg_datasets}
     data_root = os.path.expanduser(args.data_root or default_root)
     tax = get_taxonomy(os.path.abspath(args.taxonomy))

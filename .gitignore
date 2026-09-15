@@ -10,3 +10,6 @@ data/
 *.zip
 *.jsonl
 !tests/fixtures/*.jsonl
+
+# 本机状态，不入库（哪些数据源已下好 / 是否启用）
+configs/*.local.yaml
