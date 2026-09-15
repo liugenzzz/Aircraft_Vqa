@@ -26,9 +26,24 @@ REWRITE_SYSTEM = (
     "4. 只输出改写后的答案本身，不要解释。"
 )
 
-# 不做改写的任务：答案本身就是结构化输出，改写只会引入风险
-PROTECTED_TASKS = {"grounding_single", "grounding_all", "grounding_negative",
-                   "counting", "classification_mc"}
+def _protected_tasks() -> set:
+    """不送改写的任务 —— **从 output_format 自动推导，不手维护名单**。
+
+    手维护一张表，新增任务时必然漏（grounding_counterfactual 就漏过）。
+    规则很清楚：
+      json_only / text_then_json  答案是结构化输出，改写只会引入风险
+      dialog                      多轮里混着 JSON 轮次，整体改写会破坏结构
+      classification_mc           答案是"字母. 选项"，改了就对不上 answer_letter
+    只有纯 text 任务参与改写。
+    """
+    from .templates import OUTPUT_FORMAT
+    out = {t for t, f in OUTPUT_FORMAT.items()
+           if f in ("json_only", "text_then_json", "dialog")}
+    out.add("classification_mc")
+    return out
+
+
+PROTECTED_TASKS = _protected_tasks()
 
 
 class LLMRewriter:

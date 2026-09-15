@@ -33,6 +33,9 @@ python scripts/download/download_all.py --data-root ~/data/raw --check  # 手动
 python scripts/gen_question_bank.py --dry-run          # 先看 prompt
 python scripts/gen_question_bank.py --per-task 25      # 需要 LLM_API_KEY
 
+# 1.8) 数据体检：正式构建前先看清每个源被读成了什么
+python scripts/preflight.py --data-root ~/data/raw
+
 # 2) 归一化成统一中间表示
 python scripts/ingest.py --data-root ~/data/raw --out data/interim
 
@@ -109,8 +112,11 @@ scripts/
   download/         download_all（一站式取数 + 手动清单）、
                     roboflow_batch（批量下 Universe 长尾集）、各数据集单独脚本
   ingest / build_vqa / visualize / make_demo_data
-  gen_question_bank 大模型扩写问法（一次性离线跑，强制指令式）
-tests/              107 个回归测试
+  preflight          数据体检：每个源读到什么、类型映射对不对、mask 有没有读到
+  gen_question_bank  大模型扩写问法（一次性离线跑，强制指令式）
+  llm_smoke          大模型改写层的 100 条烟测（含事实指纹比对与并排对照）
+tests/              126 个回归测试，含按官方目录结构造的
+                    MVTec AD / LOCO / Real-IAD / 腐蚀集 / COCO 夹具
 ```
 
 ## 授权提醒

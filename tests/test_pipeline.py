@@ -1327,3 +1327,40 @@ def test_no_colloquial_questions_in_any_pool():
         for q in pool:
             for w in banned:
                 assert w not in q, f"口语化问法：{q}（命中 {w}）"
+
+
+def test_protected_tasks_derived_from_output_format():
+    """保护名单手维护必然漏 —— grounding_counterfactual 就漏过一次。"""
+    from aircraft_vqa.vqa import templates as TT
+    from aircraft_vqa.vqa.llm import PROTECTED_TASKS
+    for task, fmt in TT.OUTPUT_FORMAT.items():
+        if fmt in ("json_only", "text_then_json", "dialog"):
+            assert task in PROTECTED_TASKS, f"{task}({fmt}) 应被保护"
+    assert "classification_mc" in PROTECTED_TASKS      # 答案是"字母. 选项"
+    # 纯 text 任务才参与改写
+    assert "description" not in PROTECTED_TASKS
+    assert "severity_action" not in PROTECTED_TASKS
+
+
+def test_rewriter_rejects_fact_drift():
+    from aircraft_vqa.vqa.llm import LLMRewriter
+    rw = LLMRewriter("none")
+    rw.provider = "openai"
+    rw._call = lambda t: "画面左上有 5 处裂纹。"      # 数字被改了
+    r = {"task": "description", "output_format": "text", "question": "q",
+         "answer": "画面左上有 3 处裂纹。"}
+    rw.rewrite(r)
+    assert r["answer"] == "画面左上有 3 处裂纹。"
+    assert r["rewrite_rejected"] == "fact_drift"
+
+
+def test_rewriter_accepts_faithful_rewrite():
+    from aircraft_vqa.vqa.llm import LLMRewriter
+    rw = LLMRewriter("none")
+    rw.provider = "openai"
+    rw._call = lambda t: "画面左上共发现 3 处裂纹。"   # 数字一致，句式变了
+    r = {"task": "description", "output_format": "text", "question": "q",
+         "answer": "画面左上有 3 处裂纹。"}
+    rw.rewrite(r)
+    assert r.get("rewritten") is True
+    assert r["answer_template"] == "画面左上有 3 处裂纹。"

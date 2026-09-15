@@ -55,6 +55,25 @@
 `bbox_edge` 段统计框贴边率。大量 0 / 1000 说明合成时缺陷被贴到了图像边缘，
 或者坐标换算有 clip 问题。
 
+## 1c. 接新数据先做体检
+
+```bash
+python scripts/preflight.py --data-root ~/data/raw
+python scripts/preflight.py --data-root ~/data/raw --only mvtec_loco_screwbag --all
+```
+
+对每个源做**随机抽样**（不是取前 N 条 —— 很多数据集把全正常的训练集排在前面，
+顺序取样会显示"异常率 0%"），报告：
+
+- 样本数、正负比、分辨率范围、类别与对象分布；
+- **异常图中带框的比例**。低于 50% 会告警 —— 说明 mask/标注没读到，
+  这类图只能做有无判定，不能做定位；
+- **映射不到本体的原始类别名**，直接给出该补进 `taxonomy.aliases` 的词表
+  （`anomaly`/`defect` 这类泛称不算，落到 other_anomaly 是正确行为）；
+- other_anomaly 占比过半时提示该源出不了类型题。
+
+体检干净了再跑 ingest。
+
 ## 2. 人工抽检（必做）
 
 自动质检查不出"框是准的但标的类型不对"这类问题。构建完至少看 30~50 张：
@@ -157,6 +176,18 @@ MVTec AD / LOCO 是 CC BY-NC-SA 4.0。用 `--commercial-only` 可以一键排除
 传入孔边坐标，不是随机位置。
 
 ### 3.12 改写层可能悄悄改数字
+上线前先跑 100 条烟测：
+
+```bash
+export LLM_API_KEY=xxx LLM_BASE_URL=http://127.0.0.1:8000/v1
+python scripts/llm_smoke.py --n 100 --model qwen3-27b
+```
+
+按任务均匀取样，逐条做事实指纹比对 + 重跑质检，产出并排对照文件。
+**采纳率低于 60% 就别全量跑**，先调 `vqa/llm.py` 的 `REWRITE_SYSTEM`。
+
+保护名单（不送改写的任务）**从 output_format 自动推导**，不手维护 ——
+手维护必然漏，`grounding_counterfactual` 就漏过一次。
 所以 `vqa/llm.py` 做了事实指纹比对（数字 + JSON 片段必须逐字一致），
 并且定位类答案根本不送去改写。自己改这一层时别把这两道保险拆了。
 
