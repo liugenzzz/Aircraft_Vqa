@@ -1292,3 +1292,38 @@ def test_all_answer_templates_are_fully_formatted(tmp_path):
                     t["answer"] for t in r.get("turns", []))
                 assert not _re.search(r"\{[a-z_]+\}", text), (r["task"], text)
     assert n > 20
+
+
+def test_single_turn_reference_is_unambiguous(tmp_path):
+    """图里有多处缺陷时，单轮问法也必须点名 —— 不然"该缺陷"没有唯一先行词。"""
+    cfg = BuildConfig(max_qa_per_sample=30)
+    cfg.task_weights = {k: 1.0 for k in cfg.task_weights}
+    b = VQABuilder(cfg, TAX)
+    s = _sample(tmp_path, "anomalous", "crack", n=1)
+    s.defects.append(Defect(type="corrosion", type_raw="corrosion",
+                            type_zh=TAX.zh("corrosion"), bbox=[200, 20, 260, 80],
+                            area_ratio=0.03, region="右下", severity="major"))
+    for r in b.build(s):
+        if r["task"] == "severity_action":
+            assert any(w in r["question"] for w in ("裂纹", "腐蚀锈蚀", "画面")), \
+                r["question"]
+        if r["task"] == "classification_open":
+            assert "画面" in r["question"] or "区域" in r["question"], r["question"]
+    # 单一缺陷时可以用通用指代
+    r1 = [x for x in b.build(_sample(tmp_path, "anomalous", "crack", n=1))
+          if x["task"] == "severity_action"]
+    assert r1
+
+
+def test_no_colloquial_questions_in_any_pool():
+    """用户明确要求问法偏指令性；扩模板时很容易把口语化的加回来。"""
+    from aircraft_vqa.vqa import templates as TT
+    banned = ["帮我", "看一下这个", "看看这张", "说一下。", "大概怎么",
+              "要紧吗", "有没有毛病", "放一起看", "怎么样？", "能直接装",
+              "给个框", "哪个部位的件", "是好的", "有几个？", "呗", "咋"]
+    pools = list(TT.QUESTIONS.values()) + [
+        TT.Q_MT_T2_POS, TT.Q_MT_T2_NEG, TT.Q_MT_T3_ONE, TT.Q_MT_T3_MANY]
+    for pool in pools:
+        for q in pool:
+            for w in banned:
+                assert w not in q, f"口语化问法：{q}（命中 {w}）"

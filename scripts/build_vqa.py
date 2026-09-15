@@ -254,6 +254,18 @@ def main() -> int:
     print(f"[diversity] 排除空列表后，top20 答案占比 {share:.1%}"
           + ("  ⚠ 超过 5%，有模板在复读" if share > 0.05 else ""))
 
+    # system 随数据集一起落盘：训练时它进 prompt，**推理时必须用同一套**，
+    # 否则模型的行为会漂（尤其是"只输出 JSON、不附加解释"这条契约）。
+    from aircraft_vqa.vqa.templates import OUTPUT_FORMAT, SYSTEM_BY_OUTPUT
+    with open(os.path.join(args.out, "system_prompts.json"), "w",
+              encoding="utf-8") as f:
+        json.dump({"note": "训练用的 system。推理时按任务的 output_format "
+                           "取同一条，不要换措辞。",
+                   "by_output_format": SYSTEM_BY_OUTPUT,
+                   "task_to_output_format": OUTPUT_FORMAT},
+                  f, ensure_ascii=False, indent=2)
+    print(f"[export] system 提示词 -> {args.out}/system_prompts.json")
+
     st = stats(records)
     with open(os.path.join(args.out, "stats.json"), "w", encoding="utf-8") as f:
         json.dump({"stats": st, "qc": report, "ratio_gap": gaps,

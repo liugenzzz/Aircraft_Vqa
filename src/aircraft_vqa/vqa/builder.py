@@ -540,7 +540,10 @@ class VQABuilder:
         name = self.tax.zh(t)
         if self.cfg.term_annotation:
             name = f"{name}（{self.tax.en(t)}）"
-        q = self._pick_q("classification_open", rng, **self._ctx(s))
+        pool = (T.Q_CLASSIFY_NAMED if len(s.defect_types) > 1
+                else T.Q_CLASSIFY_OPEN)
+        q = rng.choice([x for x in self.qpool["classification_open"] if x in pool]
+                       or pool).format(region=d.region or "中部", **self._ctx(s))
         a = rng.choice(T.A_CLASSIFY_OPEN).format(defect=name, evidence=evidence)
         return self._rec(s, "classification_open", "recognition", q, a,
                          None, {"target_type": t, "answer_defect_types": [t]})
@@ -582,7 +585,14 @@ class VQABuilder:
         name = self.tax.zh(d.type)
         if info:
             name = f"{name}（{info['zh']}）"
-        q = self._pick_q("severity_action", rng, **self._ctx(s))
+        # 图里有多种缺陷时，问法必须点名是哪一处 —— 单轮同样存在指代歧义，
+        # 用"该缺陷"配只讲其中一个的答案，是在教模型遇到歧义就默认挑第一个。
+        pool = (T.Q_SEVERITY_NAMED if len(s.defect_types) > 1
+                else T.Q_SEVERITY_ONE)
+        q = rng.choice([x for x in self.qpool["severity_action"] if x in pool]
+                       or pool).format(
+            defect=self.tax.zh(d.type), region=d.region or "中部",
+            **self._ctx(s))
         a = rng.choice(T.A_SEVERITY).format(
             severity=self.tax.severity_zh(d.severity),
             severity_desc=self.tax.severity_desc(d.severity),
