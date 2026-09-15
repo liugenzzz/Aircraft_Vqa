@@ -18,6 +18,9 @@ from collections import Counter
 
 import _bootstrap  # noqa: F401
 import numpy as np
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
+from aircraft_vqa.adapters.base import load_mask   # noqa: E402
 from PIL import Image
 
 IMG_EXT = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
@@ -45,7 +48,11 @@ def main() -> int:
     for fn in files:
         with Image.open(os.path.join(d, fn)) as im:
             modes[im.mode] += 1
-            arr = np.array(im.convert("P") if im.mode == "P" else im.convert("L"))
+        # 走 adapter 同款 load_mask，保证这里报的数就是训练时读到的数
+        # （P 模式直读索引，VOC 配色的 RGB 反查成索引，别读成亮度）
+        arr = load_mask(os.path.join(d, fn))
+        if arr is None:
+            continue
         vals, cnts = np.unique(arr, return_counts=True)
         for v, c in zip(vals, cnts):
             px[int(v)] += int(c)

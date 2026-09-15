@@ -30,6 +30,10 @@ from collections import Counter
 import numpy as np
 from PIL import Image
 
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
+from aircraft_vqa.adapters.base import load_mask   # noqa: E402
+
 Image.MAX_IMAGE_PIXELS = None
 IMG_EXT = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
 
@@ -49,16 +53,14 @@ def images_in(d: str) -> list:
 def looks_like_mask(path: str) -> bool:
     """靠取值个数区分 mask 和照片。
 
-    灰度分级图取值就那么几个；RGB 存的 mask 三通道相等，也照样只有几个值。
-    照片随便一张都是几万种取值，不会误判。
+    分级图取值就那么几个（等级索引）；照片随便一张都是几万种，不会误判。
+    走 load_mask 而不是自己 convert，保证判据和 adapter 读到的是同一份数据。
     """
     try:
-        with Image.open(path) as im:
-            im.draft("L", (256, 256))       # 大图别整张解码
-            a = np.array(im.convert("L"))
+        a = load_mask(path)
     except Exception:
         return False
-    return len(np.unique(a)) <= MASK_MAX_UNIQUE
+    return a is not None and len(np.unique(a)) <= MASK_MAX_UNIQUE
 
 
 def classify(d: str, n_probe: int = 8) -> str:
@@ -122,6 +124,48 @@ def link(src: str, dst: str, copy: bool) -> None:
         os.symlink(os.path.abspath(src), dst)
 
 
+def grade_preview(img_dir: str, msk_dir: str, out_dir: str, per_grade: int) -> int:
+    """每个类别索引挑几张该索引占比最大的图，左原图右高亮，供肉眼定序。
+
+    等级顺序是这份数据里唯一没法从文件本身推出来的东西，填反了模型会学成
+    "锈得越狠越说没事"。与其让人对着 PDF 硬猜，不如直接把图摆出来。
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    by_idx: dict = {}
+    for fn in images_in(msk_dir):
+        a = load_mask(os.path.join(msk_dir, fn))
+        if a is None:
+            continue
+        vals, counts = np.unique(a, return_counts=True)
+        for v, c in zip(vals.tolist(), counts.tolist()):
+            by_idx.setdefault(int(v), []).append((c / a.size, fn))
+
+    stem2img = {os.path.splitext(f)[0]: f for f in images_in(img_dir)}
+    n_out = 0
+    for idx in sorted(by_idx):
+        for frac, fn in sorted(by_idx[idx], reverse=True)[:per_grade]:
+            ip = stem2img.get(os.path.splitext(fn)[0])
+            if not ip:
+                continue
+            try:
+                with Image.open(os.path.join(img_dir, ip)) as im:
+                    photo = np.array(im.convert("RGB"))
+                a = load_mask(os.path.join(msk_dir, fn))
+            except Exception:
+                continue
+            if a is None or a.shape[:2] != photo.shape[:2]:
+                continue
+            hi = photo.copy()
+            sel = a == idx
+            # 该索引区域压成品红，其余保持原样 —— 一眼看出标的是哪块
+            hi[sel] = (0.35 * hi[sel] + 0.65 * np.array([255, 0, 255])).astype(np.uint8)
+            pair = np.concatenate([photo, hi], axis=1)
+            name = f"idx{idx}_{frac:.2f}_{os.path.splitext(ip)[0]}.png"
+            Image.fromarray(pair).save(os.path.join(out_dir, name))
+            n_out += 1
+    return n_out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default="data/raw/corrosion_cs",
@@ -130,6 +174,9 @@ def main() -> int:
                     help="用哪一份：512x512 / original / auto（优先 512x512）")
     ap.add_argument("--copy", action="store_true", help="复制而不是软链")
     ap.add_argument("--dry-run", action="store_true", help="只看不动")
+    ap.add_argument("--grade-preview", metavar="DIR", default="",
+                    help="每个类别索引导出几张预览图，用来肉眼核对等级顺序")
+    ap.add_argument("--preview-per-grade", type=int, default=4)
     args = ap.parse_args()
 
     root = os.path.abspath(os.path.expanduser(args.root))
@@ -212,21 +259,41 @@ def main() -> int:
 
     # mask 取值直方图 —— class_map 照这个填
     hist: Counter = Counter()
-    for mp in used_masks[:: max(1, len(used_masks) // 60)][:60]:
+    modes: Counter = Counter()
+    area: Counter = Counter()
+    probe = used_masks[:: max(1, len(used_masks) // 60)][:60]
+    for mp in probe:
         try:
             with Image.open(mp) as im:
-                hist.update(np.unique(np.array(im.convert("L"))).tolist())
+                modes[im.mode] += 1
+            a = load_mask(mp)
         except Exception:
             continue
+        if a is None:
+            continue
+        vals, counts = np.unique(a, return_counts=True)
+        hist.update(vals.tolist())
+        for v, c in zip(vals.tolist(), counts.tolist()):
+            area[v] += int(c)
     if hist:
-        print("\nmask 像素取值（抽样 60 张，数字 = 出现在多少张图里）：")
+        total_px = sum(area.values()) or 1
+        print(f"\nmask 存储模式：{dict(modes)}")
+        print(f"mask 类别索引（抽样 {len(probe)} 张，走的是 adapter 同款 load_mask）：")
+        print(f"  {'索引':>4}  {'出现在多少张':>12}  {'占总像素':>9}")
         for v, c in sorted(hist.items()):
-            print(f"  {v:3d}  ->  {c} 张")
-        print("\n把这些取值填进 configs/datasets.yaml 的 corrosion_cs_vt.class_map，"
-              "形如 {0: background, 1: good, 2: fair, 3: poor, 4: severe}。")
+            print(f"  {v:>4d}  {c:>12d}  {area[v] / total_px:>8.2%}")
+        print("\n把这些索引填进 configs/datasets.yaml 的 corrosion_cs_vt.class_map。")
         print("⚠ 等级顺序（good<fair<poor<severe）填反了比不用这个数据集更糟，"
               "对照 'Corrosion Annotation Guidelines.pdf' 核实，"
-              "再用 scripts/visualize.py 抽查几张。")
+              "再用 --grade-preview 抽查几张。")
+
+    if args.grade_preview and not args.dry_run:
+        n = grade_preview(img_out, msk_out, args.grade_preview,
+                          args.preview_per_grade)
+        print(f"\n已导出 {n} 张预览到 {args.grade_preview}")
+        print("文件名形如 idx3_0.72_xxx.png（索引_该索引占图比例_原名），"
+              "左原图右高亮。按索引从小到大看一遍，锈蚀程度应当递增；"
+              "如果反了，class_map 就要倒过来填。")
     return 0
 
 

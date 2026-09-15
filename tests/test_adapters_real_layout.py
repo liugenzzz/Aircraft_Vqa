@@ -436,3 +436,105 @@ def test_arrange_corrosion_rerun_ignores_its_own_output(tmp_path):
         assert sorted(p.name for p in (tmp_path / "images").iterdir()) == first
     finally:
         _s.argv = argv
+
+
+# ---------------------------------------------------------------- 调色板 mask
+def _voc_p_mask(path, idx):
+    """存成 VT 腐蚀集那种 P 模式 + VOC 调色板的 mask。"""
+    import numpy as np
+    from PIL import Image
+    from aircraft_vqa.adapters.base import _voc_palette
+    im = Image.fromarray(np.asarray(idx, dtype="uint8"), mode="P")
+    im.putpalette(_voc_palette().flatten().tolist())
+    im.save(path)
+
+
+def test_load_mask_keeps_palette_indices(tmp_path):
+    """P 模式 mask 必须读出类别索引，不能读成调色板颜色的亮度。
+
+    真实踩到的坑：VT 腐蚀集的 mask 是 P 模式 VOC 配色，旧实现走
+    convert("L") 把索引 1/2/3 读成了 38/75/113，class_map 静默失配，
+    四级腐蚀整批退化成按面积估严重度，而且不报任何错。
+    """
+    import numpy as np
+    from PIL import Image
+    from aircraft_vqa.adapters.base import load_mask
+
+    p = tmp_path / "m.png"
+    _voc_p_mask(p, [[0, 1], [2, 3]])
+    assert Image.open(p).mode == "P"
+    assert sorted(np.unique(load_mask(str(p))).tolist()) == [0, 1, 2, 3]
+    # 复现旧实现的错误读数，确保这个测试真的盯着这个坑
+    old = np.unique(np.array(Image.open(p).convert("L"))).tolist()
+    assert old == [0, 38, 75, 113]
+
+
+def test_load_mask_handles_voc_colored_rgb(tmp_path):
+    """同一份标注存成 VOC 配色的 RGB 也要还原成同样的索引。"""
+    import numpy as np
+    from PIL import Image
+    from aircraft_vqa.adapters.base import _voc_palette, load_mask
+
+    idx = np.array([[0, 1], [2, 3]], dtype="uint8")
+    p = tmp_path / "m.png"
+    Image.fromarray(_voc_palette()[idx]).save(p)
+    assert sorted(np.unique(load_mask(str(p))).tolist()) == [0, 1, 2, 3]
+
+
+def test_load_mask_plain_grayscale_unchanged(tmp_path):
+    """普通灰度标签图不能被新逻辑改动。"""
+    import numpy as np
+    from PIL import Image
+    from aircraft_vqa.adapters.base import load_mask
+
+    p = tmp_path / "m.png"
+    Image.fromarray(np.array([[0, 1], [2, 3]], dtype="uint8"), mode="L").save(p)
+    assert sorted(np.unique(load_mask(str(p))).tolist()) == [0, 1, 2, 3]
+
+
+def test_corrosion_grades_survive_palette_masks(tmp_path):
+    """端到端：P 模式 mask + 仓库里那份 class_map，要读出 fair/poor/severe。"""
+    import numpy as np
+    from PIL import Image
+
+    root = tmp_path / "corrosion_cs"
+    (root / "images").mkdir(parents=True)
+    (root / "masks").mkdir()
+    rng = np.random.default_rng(0)
+    for i, grades in enumerate(([0, 1], [0, 2], [0, 3])):
+        Image.fromarray(rng.integers(0, 255, (32, 32, 3), dtype="uint8")
+                        ).save(root / "images" / f"{i}.jpg")
+        m = np.full((32, 32), grades[0], dtype="uint8")
+        m[8:20, 8:20] = grades[1]
+        _voc_p_mask(root / "masks" / f"{i}.png", m)
+
+    samples = _run({"name": "corrosion_cs_vt", "adapter": "mask_seg",
+                    "root": str(root), "category": "metal_part",
+                    "grade_type": "corrosion",
+                    "images_dir": "images", "masks_dir": "masks",
+                    "class_map": {1: "fair", 2: "poor", 3: "severe"},
+                    "background_values": [0]})
+    assert len(samples) == 3
+    grades = sorted({d.grade for s in samples for d in s.defects})
+    assert grades == ["fair", "poor", "severe"], grades
+    assert all(d.type == "corrosion" for s in samples for d in s.defects)
+    # 等级要真的决定严重度，而不是退回按面积估
+    sev = {d.grade: d.severity for s in samples for d in s.defects}
+    assert sev["severe"] == "critical", sev
+    assert sev["fair"] == "major", sev
+
+
+def test_shipped_corrosion_class_map_matches_adapter_reading(tmp_path):
+    """仓库里那份 class_map 的键必须和 load_mask 实际读出的索引对得上。"""
+    import io as _io
+
+    import yaml
+    cfg = yaml.safe_load(_io.open(os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "configs", "datasets.yaml"), encoding="utf-8"))
+    e = [d for d in cfg["datasets"] if d["name"] == "corrosion_cs_vt"][0]
+    assert set(e["class_map"]) == {1, 2, 3}, e["class_map"]
+    assert e["background_values"] == [0]
+    # 顺序必须和本体里的有序等级一致
+    order = get_taxonomy().grades["corrosion"]["order"]
+    got = [e["class_map"][k] for k in sorted(e["class_map"])]
+    assert got == [g for g in order if g in got], (got, order)

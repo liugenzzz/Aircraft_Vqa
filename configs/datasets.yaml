@@ -161,11 +161,22 @@ datasets:
     # （AASHTO / 桥梁检查员手册的腐蚀状态标准），所以用 grade_type 显式声明。
     # 等级会映射成程度词（轻微锈蚀/点蚀起皮/层状剥落/截面损失）并决定严重度。
     grade_type: corrosion
-    # !! 下面的像素值需要你按实际 mask 核对，不同发布版本取值可能不同：
-    #    python scripts/inspect_masks.py --masks ~/data/raw/corrosion_cs/masks
-    class_map: {1: good, 2: fair, 3: poor, 4: severe}
+    # mask 是 P 模式 + VOC 调色板，实测类别索引只有 0/1/2/3 四个。
+    # 索引 0 铺满每一张图、占比最大 —— 是未腐蚀的背景（AASHTO 的 Good 状态
+    # 就是"表面完好"），所以它走 background_values 被跳过，不产出缺陷框；
+    # 真正的缺陷是 1/2/3 三级。索引 3 只出现在约两成图里，符合"最严重的最少见"。
+    #
+    # 注意：别再照 inspect_masks 里那种 convert("L") 的读法填 38/75/113 ——
+    # 那是调色板颜色的亮度，不是类别索引。load_mask 已经按 P 模式直读索引。
+    #
+    # !! 等级顺序（越大越严重）务必肉眼核对过再往下走，填反了模型会学成
+    #    "锈得越狠越说没事"，比不用这份数据更有害：
+    #    python scripts/arrange_corrosion.py --root data/raw/corrosion_cs \
+    #        --grade-preview /tmp/corr_preview
+    class_map: {1: fair, 2: poor, 3: severe}
     background_values: [0]
-    notes: "4 级腐蚀像素分割，支撑'锈蚀到什么程度 / 怎么处理'的分级问答。"
+    notes: "440 张 4 级腐蚀像素分割，支撑'锈蚀到什么程度 / 怎么处理'的分级问答。
+      索引 0（Good，未腐蚀）当背景，实际产出 fair/poor/severe 三级缺陷。"
 
   # ---------------- 合成数据（本仓库生成，完全可商用） ----------------
   - name: synthetic_panel

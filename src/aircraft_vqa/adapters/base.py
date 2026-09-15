@@ -25,11 +25,58 @@ def image_size(path: str) -> tuple:
         return im.size  # (w, h)
 
 
+def _voc_palette(n: int = 256) -> np.ndarray:
+    """PASCAL VOC 的标准调色板 —— 分割数据集事实上的默认配色。"""
+    pal = np.zeros((n, 3), dtype=np.uint8)
+    for i in range(n):
+        c, r, g, b = i, 0, 0, 0
+        for j in range(8):
+            r |= ((c >> 0) & 1) << (7 - j)
+            g |= ((c >> 1) & 1) << (7 - j)
+            b |= ((c >> 2) & 1) << (7 - j)
+            c >>= 3
+        pal[i] = (r, g, b)
+    return pal
+
+
+def _rgb_to_index(arr: np.ndarray) -> np.ndarray:
+    """彩色 mask -> 类别索引。按 VOC 调色板反查，查不到的按出现顺序兜底。"""
+    colors, inv = np.unique(arr.reshape(-1, 3), axis=0, return_inverse=True)
+    pal = _voc_palette()
+    lut = {tuple(c): i for i, c in enumerate(pal)}
+    idx = np.array([lut.get(tuple(c), -1) for c in colors], dtype=np.int32)
+    unknown = idx < 0
+    if unknown.any():
+        # 不是 VOC 配色。按颜色排序兜底给索引，但这个顺序跨图不保证一致，
+        # 必须让人看见，不能默默产出一份对不上的标签。
+        print(f"[load_mask] 警告：mask 里有 {int(unknown.sum())} 种颜色不在 VOC "
+              f"调色板里 {[tuple(int(x) for x in c) for c in colors[unknown]][:6]}，"
+              "已按颜色排序临时编号 —— 请显式提供 color_map 再用")
+        nxt = int(idx.max()) + 1 if (~unknown).any() else 0
+        idx[unknown] = np.arange(nxt, nxt + int(unknown.sum()))
+    return idx[inv].reshape(arr.shape[:2])
+
+
 def load_mask(path: str) -> Optional[np.ndarray]:
+    """读分割 mask，返回**类别索引**矩阵。
+
+    这里刻意不走 convert("L")：调色板图（P 模式）一转灰度，索引就变成了
+    调色板颜色的亮度 —— VOC 配色下 1/2/3 会变成 38/75/113，class_map 静默
+    失配，等级信息整批丢掉且不报错。VT 腐蚀集就是这么存的。
+    """
     if not path or not os.path.exists(path):
         return None
     with Image.open(path) as im:
-        return np.array(im.convert("L"))
+        if im.mode == "P":
+            return np.array(im)                      # 调色板索引即类别索引
+        if im.mode in ("L", "1"):
+            return np.array(im.convert("L"))
+        if im.mode.startswith("I") or im.mode == "F":
+            return np.array(im).astype(np.int32)     # 16/32 位标签图
+        arr = np.array(im.convert("RGB"))
+    if (arr[..., 0] == arr[..., 1]).all() and (arr[..., 1] == arr[..., 2]).all():
+        return arr[..., 0]                           # 灰度图存成了 RGB
+    return _rgb_to_index(arr)
 
 
 def list_images(d: str) -> list:
