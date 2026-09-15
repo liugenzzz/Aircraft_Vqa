@@ -1364,3 +1364,30 @@ def test_rewriter_accepts_faithful_rewrite():
     rw.rewrite(r)
     assert r.get("rewritten") is True
     assert r["answer_template"] == "画面左上有 3 处裂纹。"
+
+
+def test_roboflow_versions_are_pinned_not_latest():
+    """Roboflow 的 latest 往往是单类或增广版本 —— 必须钉死版本号。
+
+    aircraft_skin_defects 的 latest(v23) 是 single class defect，
+    Missing-head 这个唯一命中"螺丝缺失"的标注会直接丢掉。
+    """
+    da = _load_script(os.path.join("download", "download_all.py"))
+    rf = [s for s in da.SOURCES if "rf" in s]
+    assert rf
+    for s in rf:
+        v = s["rf"]["version"]
+        assert v != "latest", f"{s['name']} 的版本没钉死"
+        assert v.isdigit(), f"{s['name']} 的版本应为具体数字，收到 {v}"
+
+
+def test_no_python_syntax_errors_in_scripts():
+    """中文引号写成 ASCII 双引号会把字符串截断 —— 这个坑踩过两次。"""
+    import py_compile
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for dirpath, _, files in os.walk(os.path.join(root, "scripts")):
+        if "__pycache__" in dirpath:
+            continue
+        for fn in files:
+            if fn.endswith(".py"):
+                py_compile.compile(os.path.join(dirpath, fn), doraise=True)

@@ -22,14 +22,34 @@
 ### A1. Roboflow Universe · `DDIISc/aircraft_skin_defects` ★★★★★
 - **为什么最重要**：类别里**直接含 `Missing-head`（铆钉 / 紧固件 / 螺丝头缺失）**，这是需求里"螺丝缺失"唯一能直接对上的公开标注。
 - 类别：`Crack` / `Dent` / `Scratch` / `Paint-peel-off` / `Missing-head`
-- 规模：原版 372 张（Hawker Hunter 276 / HT2 70 / Pushpak 76）；同作者后续版本 `aircraft-skin-defects-new-dataset` 1115 张、`aircraft-skin-defects-classification-new-dataset` 4557 张。
+- 规模：**原始数据只有 372 张**（Hawker Hunter 276 / HT2 70 / Pushpak 76）。
+- **⚠ 版本选择是这个数据集最大的坑**：Roboflow 上有 20+ 个版本，`latest`（v23）是
+  「single class defect」—— 所有缺陷合并成一类，`Missing-head` 直接没了。
+  张数超过 372 的版本全是增广或裁剪的衍生品：
+
+  | 版本 | 张数 | 实质 | 能不能用 |
+  |---|---|---|---|
+  | v1/v5/v6/v7/v22/v23 | 372~796 | 单类 | ✗ 丢类型 |
+  | v8 | 14304 | 单类 + 增广 | ✗ |
+  | v10~v14 | 5673 | isolated object（裁剪成小块）| ✗ 定位任务没了 |
+  | v18 | 2996 | 3 类 + 灰度翻转增广 | △ 只有 3 类 |
+  | v19 | 372 | 4 类 灰度 全图 无增广 | △ 少一类 |
+  | **v20** | **372** | **5 类 灰度 全图 无增广** | **← 用这个** |
+  | v21 | 3379 | 5 类 isolated 灰度 | ✗ 裁剪 |
+
+  选版本看三点：**多类**（保住细粒度标注）、**全图**（裁剪版做不了定位）、
+  **无增广**（增广副本不带新信息，还可能跨 split 泄漏）。
+  v20 的代价是灰度，但这五类（裂纹/凹坑/划伤/漆层剥落/缺件）对颜色依赖不强，可接受。
+  本仓库的 `configs`/下载脚本已把版本钉死为 v20。
 - 标注：目标检测 bbox（COCO / YOLO / VOC 可导出）
 - 获取：Roboflow API（需免费 API Key），`roboflow` pip 包或 REST 下载
 - 局限：规模小、来自博物馆/教学机，光照单一 → **只能当"域样式种子"，不足以单独训练**
 - 链接：https://universe.roboflow.com/ddiisc/aircraft_skin_defects
 
 ### A2. Roboflow Universe · `University of Technology Sydney/aircraft-defect-detection` ★★★★
-- 规模：**9,352 张**，是目前能拿到的最大航空缺陷检测集
+- 版本：**v3「No Nulls」6,803 张**（每张都有标注）；v2 是 25,736 张但含大量未标注图。
+  取 v3 的理由：**未标注 ≠ 确认无缺陷**，拿来当正样本有风险；正常图我们从
+  VisA / 合成 / MVTec 的 train 集里取，不缺这一块。已钉死为 v3。
 - 类别：dent / leak / rupture 等（偏机身宏观损伤，紧固件粒度弱）
 - 用途：L1 域外观 + "结构件异常"这一支的主力
 - 链接：https://universe.roboflow.com/university-of-technology-sydney-21uto/aircraft-defect-detection

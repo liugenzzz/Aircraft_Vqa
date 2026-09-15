@@ -109,7 +109,12 @@ def main() -> int:
         if args.list_versions:
             return 0
         version = str(vers[-1]["version"])
-        print(f">> 未指定版本，使用最新的 v{version}")
+        print(f"\n>> ⚠ 未指定版本，将使用最新的 v{version}")
+        print(">>   注意：Roboflow 的「最新」往往不是「最合适」。同一项目的不同版本")
+        print(">>   可能是单类/多类、全图/裁剪、有增广/无增广，差别很大。")
+        print(">>   选版本看三点：① 多类（保住细粒度标注）② 全图（裁剪版做不了定位）")
+        print(">>   ③ 无增广（增广副本不带新信息，还可能跨 split 泄漏）")
+        print(">>   确定要哪个版本就用 --version <n> 指定。\n")
 
     # ---- 取导出链接 ----
     url = f"{API}/{ws}/{proj}/{version}/{args.format}?api_key={key}"
@@ -152,6 +157,21 @@ def main() -> int:
            if os.path.exists(os.path.join(out, d, "_annotations.coco.json"))]
     print(f">> 完成：{out}")
     print(f"   含标注的划分：{got or '（没找到 _annotations.coco.json，检查导出格式是否为 COCO）'}")
+
+    # 下完立刻把类别和数量亮出来 —— 版本选错时这里一眼能看出来
+    # （比如只有一个 "defect" 类，说明拿到的是 single class 版本）
+    for d in got:
+        with open(os.path.join(out, d, "_annotations.coco.json"),
+                  encoding="utf-8") as f:
+            coco = json.load(f)
+        names = [c["name"] for c in coco.get("categories", [])
+                 if c["name"].lower() not in ("background", "none")]
+        print(f"   {d}: {len(coco.get('images', []))} 张，"
+              f"{len(coco.get('annotations', []))} 个标注框")
+        print(f"        类别 {names}")
+        if len(names) <= 1:
+            print("        ⚠ 只有一个类别 —— 很可能拿到了 single class 版本，"
+                  "细粒度缺陷类型全丢了。用 --list-versions 换一个多类版本。")
     print("   接着把 configs/datasets.yaml 里对应条目的 enabled 改成 true")
     return 0
 

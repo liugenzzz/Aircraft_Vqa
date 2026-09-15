@@ -68,30 +68,40 @@ SOURCES = [
         "use": "★ 类别含 Missing-head（紧固件缺失），唯一直接命中需求的航空标注",
         "dest": "roboflow/aircraft_skin_defects",
         "probe": "train/_annotations.coco.json",
-        "size": "约 100 MB",
+        "size": "372 张 / v20",
         "license": "见 Roboflow 项目页（多为 CC BY 4.0）",
         "env": "ROBOFLOW_API_KEY",
         "env_how": "https://app.roboflow.com → Settings → Roboflow API → Private API Key",
         "page": "https://universe.roboflow.com/ddiisc/aircraft_skin_defects",
+        # !! 版本必须钉死。这个项目有 20+ 个版本，latest（v23）是
+        # "single class defect" —— 所有缺陷合并成一类，Missing-head 直接没了。
+        # v20 = 372 张 / 5 classes / 全图 / 无增广，是唯一符合需求的：
+        #   · 多类  -> 保住 Missing-head 这个唯一命中"螺丝缺失"的标注
+        #   · 全图  -> isolated object 版本是裁剪出的小块，定位任务就没了
+        #   · 无增广 -> 增广副本不带新信息，还可能跨 split 泄漏
+        # 代价：灰度。这几类（裂纹/凹坑/划伤/漆层剥落/缺件）对颜色依赖不强，可接受。
         "rf": {"workspace": "ddiisc", "project": "aircraft_skin_defects",
-               "version": "latest"},
+               "version": "20"},
         "config_key": "aircraft_skin_defects",
         "config_names": ["aircraft_skin_defects"],
     },
     {
         "name": "uts_aircraft_defect",
         "mode": "keyed",
-        "zh": "Roboflow · UTS aircraft-defect-detection（9,352 图）",
+        "zh": "Roboflow · UTS aircraft-defect-detection（v3, 6803 图）",
         "use": "目前能拿到的最大航空缺陷检测集，航空域外观主力",
         "dest": "roboflow/aircraft-defect-detection",
         "probe": "train/_annotations.coco.json",
-        "size": "约 1 GB",
+        "size": "6803 张 / v3",
         "license": "见 Roboflow 项目页",
         "env": "ROBOFLOW_API_KEY",
         "env_how": "同上",
         "page": "https://universe.roboflow.com/university-of-technology-sydney-21uto/aircraft-defect-detection",
+        # v3 = 6803 张 "No Nulls"（每张都有标注）；v2 = 25736 张含未标注图。
+        # 取 v3：未标注 ≠ 确认无缺陷，拿来当正样本有风险；
+        # 正常图我们从 VisA / 合成 / MVTec 的 train 里取，不缺这一块。
         "rf": {"workspace": "university-of-technology-sydney-21uto",
-               "project": "aircraft-defect-detection", "version": "latest"},
+               "project": "aircraft-defect-detection", "version": "3"},
         "config_key": "uts_aircraft_defect",
         "config_names": ["uts_aircraft_defect"],
     },

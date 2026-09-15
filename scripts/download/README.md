@@ -61,6 +61,30 @@ python scripts/download/download_all.py --data-root ~/data/raw --check
 
 都显示"已有"之后，把 `configs/datasets.yaml` 里对应条目的 `enabled` 改成 `true`。
 
+### ⚠ Roboflow 的版本必须钉死
+
+同一个项目常有 20+ 个版本，**`latest` 往往不是你要的**。
+`ddiisc/aircraft_skin_defects` 的 latest（v23）是「single class defect」——
+所有缺陷合并成一类，`Missing-head` 这个唯一命中"螺丝缺失"的标注直接丢掉。
+
+选版本看三点：
+
+1. **多类** —— 单类版本丢掉细粒度标注，我们要的类型题就没了
+2. **全图** —— `isolated object` 版本是裁剪出的小块，整张图就是缺陷，定位任务没意义
+3. **无增广** —— 增广副本不带新信息，还可能让同一张图的变体跨 split 泄漏
+
+本仓库已把版本钉死：`aircraft_skin_defects` → **v20**（372 张 / 5 类 / 全图 / 无增广），
+`aircraft-defect-detection` → **v3**（6803 张 / No Nulls）。
+
+先看有哪些版本：
+
+```bash
+python scripts/download/download_roboflow.py --workspace ddiisc \
+    --project aircraft_skin_defects --out /tmp/x --list-versions
+```
+
+下完脚本会**立刻打印类别列表和张数**，只有一个类别会直接告警 —— 版本拿错一眼能看出来。
+
 ### Roboflow 下不动时怎么办
 
 脚本会把 HTTP 错误翻译成具体原因：
