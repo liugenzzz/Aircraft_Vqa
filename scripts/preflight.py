@@ -28,8 +28,16 @@ from aircraft_vqa.taxonomy import get_taxonomy
 
 
 # 本来就没有细粒度语义的泛称，落到 other_anomaly 是正确行为
+#
+# logical_anomalies / structural_anomalies 是 MVTec LOCO 的**大类**目录名，
+# 不是缺陷类型：前者指数量或规格不对（少一颗螺丝、螺丝长度不对），后者指
+# 零件本身有物理损伤。公开发布里没有逐图的细粒度标签，光凭这两个名字判不出
+# 是"缺失"还是"多余"，硬映射只会造出假标签。所以落到 other_anomaly 是对的 ——
+# 框照样喂定位与有无判定，只是不出"这是什么缺陷"的题。
+# 真要细粒度，在 <category>/defect_names.json 里给逐图映射，adapter 会优先用它。
 GENERIC_RAW = {"anomaly", "defect", "damage", "bad", "abnormal", "ng",
-               "combined", "misc", "unknown"}
+               "combined", "misc", "unknown",
+               "logical_anomalies", "structural_anomalies"}
 
 
 def resolve(spec: dict, data_root: str) -> dict:

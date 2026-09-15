@@ -132,8 +132,11 @@ defect_types:
     en: contamination
     group: surface
     severity_default: minor
+    # color 是 MVTec metal_nut 的官方类名：表面有异色斑块（沾色/污渍）。
+    # 不是漆层剥落也不是锈蚀，归到"污染异物"最贴。
     aliases: [contamination, contaminated, foreign_object, fod, stain, dirt, grease,
-              leak, oil_leak, spot, inclusion, spots]
+              leak, oil_leak, spot, inclusion, spots, color, discoloration,
+              discolored]
     action: 清洁并溯源渗漏点，确认非液压/燃油渗漏
 
   misalignment:
@@ -144,8 +147,11 @@ defect_types:
     en: misalignment
     group: structure
     severity_default: major
+    # flip 是 MVTec metal_nut 的官方类名：螺母装反了（正反面颠倒）。
+    # 归到"错位不齐"而不是新开一类 —— 装反本质就是安装位置/朝向不对。
     aliases: [misplaced, misaligned, wrong_cable_location, shift, offset,
-              wrong_position, tilted]
+              wrong_position, tilted, flip, flipped, upside_down, reversed,
+              wrong_orientation]
     action: 按图纸复位并重新紧固，检查孔位偏差
 
   extra_part:

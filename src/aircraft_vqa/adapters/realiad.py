@@ -19,6 +19,22 @@ _CLS_KEYS = ("anomaly_class", "defect_type", "anomaly_type", "label")
 _VIEW_KEYS = ("view", "camera", "view_id", "pose")
 
 
+def _resolve(rel: str, img_root: str, cat: str) -> str:
+    """把 json 里的相对路径落到实际文件上，找不到返回空串。
+
+    不同发布版本里，相对路径有的已经含类别名（terminalblock/xxx.jpg），
+    有的不含（xxx.jpg），所以两层都试。
+    """
+    if not rel:
+        return ""
+    if os.path.isabs(rel):
+        return rel if os.path.exists(rel) else ""
+    for cand in (os.path.join(img_root, rel), os.path.join(img_root, cat, rel)):
+        if os.path.exists(cand):
+            return cand
+    return ""
+
+
 def _pick(d: dict, keys) -> str:
     for k in keys:
         v = d.get(k)
@@ -88,16 +104,14 @@ class RealIADAdapter(BaseAdapter):
                     rel = _pick(item, _IMG_KEYS)
                     if not rel:
                         continue
-                    img = rel if os.path.isabs(rel) else os.path.join(img_root, rel)
-                    if not os.path.exists(img):
-                        img = os.path.join(img_root, cat, rel)
-                        if not os.path.exists(img):
-                            continue
-                    mrel = _pick(item, _MASK_KEYS)
-                    mask = None
-                    if mrel:
-                        cand = mrel if os.path.isabs(mrel) else os.path.join(img_root, mrel)
-                        mask = cand if os.path.exists(cand) else None
+                    img = _resolve(rel, img_root, cat)
+                    if not img:
+                        continue
+                    # mask 必须和 image 走同一套路径兜底：官方 json 里两者的
+                    # 相对路径是同构的，图片靠 <img_root>/<cat>/<rel> 才找到时，
+                    # mask 也一定在那一层。少了这个兜底，掩码全部落空 ——
+                    # 体检里就是"异常图带框率仅 0%"，而样本数看着完全正常。
+                    mask = _resolve(_pick(item, _MASK_KEYS), img_root, cat)
                     raw = _pick(item, _CLS_KEYS)
                     is_ok = raw.lower() in ("ok", "good", "normal", "0", "")
                     stem = os.path.splitext(os.path.basename(img))[0]

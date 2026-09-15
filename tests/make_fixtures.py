@@ -93,7 +93,17 @@ def make_real_iad(root: str, shape: str = "train_test") -> str:
     ng2 = {"image_path": imgs["ng2"], "anomaly_class": "OK", "view": "C3",
            "category": cat}          # 有缺陷的物体、但这个角度看不见 -> 标 OK
 
-    if shape == "train_test":
+    if shape == "no_cat_prefix":
+        # 有的发布版本里 json 的相对路径不含类别名，要靠
+        # <img_root>/<cat>/<rel> 兜底才找得到。图片和 mask 必须同时兜底 ——
+        # 只兜图片不兜 mask，样本数看着正常，掩码却全部落空。
+        strip = lambda p: p.split("/", 1)[1]
+        ok = dict(ok, image_path=strip(ok["image_path"]))
+        ng = dict(ng, image_path=strip(ng["image_path"]),
+                  mask_path=strip(ng["mask_path"]))
+        ng2 = dict(ng2, image_path=strip(ng2["image_path"]))
+        data = {"train": [ok], "test": [ng, ng2]}
+    elif shape == "train_test":
         data = {"train": [ok], "test": [ng, ng2]}
     elif shape == "other_keys":      # 顶层键不叫 train/test
         data = {"meta": {"version": 1}, "samples": [ok, ng, ng2]}

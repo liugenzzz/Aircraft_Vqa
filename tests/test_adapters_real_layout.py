@@ -676,3 +676,80 @@ def test_grade_stats_excludes_background_from_ordering(tmp_path):
     # 背景最亮、面积最大 —— 混进单调性检查会把结论带偏
     assert acc[0]["px"] > max(acc[k]["px"] for k in (1, 2, 3))
     assert acc[0]["bright"] > acc[3]["bright"]
+
+
+def test_real_iad_mask_resolves_when_path_lacks_category(tmp_path):
+    """真实踩到的坑：图片靠 <img_root>/<cat>/<rel> 兜底才找到，
+    而 mask 没有同样的兜底，于是掩码全部落空 —— 体检报"异常图带框率仅 0%"，
+    样本数却完全正常，非常容易被当成数据本身没标注。"""
+    root = make_real_iad(str(tmp_path / "Real-IAD"), shape="no_cat_prefix")
+    samples = _run({"name": "real_iad", "adapter": "real_iad", "root": root,
+                    "image_dir": "realiad_512", "json_dir": "realiad_jsons",
+                    "category": "switch"})
+    assert len(samples) == 3, samples
+    anomalous = [s for s in samples if s.is_anomalous]
+    assert len(anomalous) == 1
+    assert anomalous[0].defects, "掩码没解析出缺陷框"
+    assert anomalous[0].defects[0].bbox is not None
+
+
+def test_real_iad_mask_still_resolves_with_category_prefix(tmp_path):
+    """含类别名的那种路径不能因为加了兜底而失效。"""
+    root = make_real_iad(str(tmp_path / "Real-IAD"), shape="train_test")
+    samples = _run({"name": "real_iad", "adapter": "real_iad", "root": root,
+                    "image_dir": "realiad_512", "json_dir": "realiad_jsons",
+                    "category": "switch"})
+    anomalous = [s for s in samples if s.is_anomalous]
+    assert len(anomalous) == 1
+    assert anomalous[0].defects[0].bbox is not None
+
+
+def test_all_mvtec_official_defect_names_are_mapped():
+    """MVTec AD 里我们用到的两类，官方缺陷目录名必须全部有归属。
+
+    体检报过 2 个未映射，就是 metal_nut 的 color（表面沾色）和
+    flip（螺母装反）。硬留在 other_anomaly 会白扔掉这批框的类型信息。
+    """
+    tax = get_taxonomy()
+    official = {
+        "screw": ["manipulated_front", "scratch_head", "scratch_neck",
+                  "thread_side", "thread_top"],
+        "metal_nut": ["bent", "color", "flip", "scratch"],
+    }
+    unmapped = [f"{c}/{d}" for c, ds in official.items() for d in ds
+                if tax.map_defect(d) == "other_anomaly"]
+    assert not unmapped, unmapped
+    assert tax.map_defect("color") == "contamination"
+    assert tax.map_defect("flip") == "misalignment"
+    # 不能把 screw 的螺纹类误伤成别的
+    assert tax.map_defect("thread_top") == "thread_damage"
+
+
+def test_loco_meta_labels_are_whitelisted_not_forced():
+    """logical/structural_anomalies 是 LOCO 的大类名，不是缺陷类型。
+
+    落到 other_anomaly 是正确行为（光凭名字判不出"缺失"还是"多余"），
+    但体检不该把它当成待修的映射缺口来报。
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "preflight", os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "scripts", "preflight.py"))
+    pf = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pf)
+    assert "logical_anomalies" in pf.GENERIC_RAW
+    assert "structural_anomalies" in pf.GENERIC_RAW
+    # 硬映射成具体类型是错的，必须保持 other_anomaly
+    tax = get_taxonomy()
+    assert tax.map_defect("logical_anomalies") == "other_anomaly"
+    assert tax.map_defect("structural_anomalies") == "other_anomaly"
+
+
+def test_loco_defect_names_json_still_wins(tmp_path):
+    """给了逐图映射时，要盖过大类目录名。"""
+    root = make_mvtec_loco(str(tmp_path / "MVTec_LOCO_AD"))
+    samples = _run({"name": "mvtec_loco_screwbag", "adapter": "mvtec_loco",
+                    "root": root, "categories": ["screw_bag"]})
+    raws = {d.type_raw for s in samples for d in s.defects}
+    assert "screw_too_long" in raws, raws
+    assert "missing_nut" in raws, raws
