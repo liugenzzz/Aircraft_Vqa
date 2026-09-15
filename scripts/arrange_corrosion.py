@@ -143,6 +143,107 @@ def link(src: str, dst: str, copy: bool) -> None:
         os.symlink(os.path.abspath(src), dst)
 
 
+def grade_stats(img_dir: str, msk_dir: str, n_max: int = 120) -> dict:
+    """统计每个类别索引底下**原图像素**长什么样，把等级定序变成可验的数。
+
+    锈蚀从轻到重，外观是有方向的：红棕色加深（redness 升）、
+    表面变暗（brightness 降）、起皮点蚀让局部更粗糙（roughness 升）。
+    面积占比和出现频率则应当递减 —— 完好区域总是最大最常见。
+
+    单看任何一项都可能被光照带偏，但四项一起同向，就不是巧合了。
+    """
+    acc: dict = {}
+    files = images_in(msk_dir)
+    files = files[:: max(1, len(files) // n_max)][:n_max]
+    stem2img = {os.path.splitext(f)[0]: f for f in images_in(img_dir)}
+    n_img = 0
+    for fn in files:
+        ip = stem2img.get(os.path.splitext(fn)[0])
+        if not ip:
+            continue
+        try:
+            with Image.open(os.path.join(img_dir, ip)) as im:
+                rgb = np.asarray(im.convert("RGB"), dtype=np.float32)
+            a = load_mask(os.path.join(msk_dir, fn))
+        except Exception:
+            continue
+        if a is None or a.shape[:2] != rgb.shape[:2]:
+            continue
+        n_img += 1
+        r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+        gray = 0.299 * r + 0.587 * g + 0.114 * b
+        redness = (r - b) / (r + b + 1.0)
+        mx, mn = rgb.max(axis=-1), rgb.min(axis=-1)
+        sat = (mx - mn) / (mx + 1.0)
+        # 局部粗糙度：相邻像素灰度差，起皮/点蚀会把它抬起来
+        gx = np.zeros_like(gray)
+        gy = np.zeros_like(gray)
+        gx[:, 1:] = np.abs(np.diff(gray, axis=1))
+        gy[1:, :] = np.abs(np.diff(gray, axis=0))
+        rough = gx + gy
+
+        for v in np.unique(a).tolist():
+            sel = a == v
+            n = int(sel.sum())
+            if not n:
+                continue
+            d = acc.setdefault(int(v), {"px": 0, "imgs": 0, "redness": 0.0,
+                                        "bright": 0.0, "sat": 0.0, "rough": 0.0})
+            d["px"] += n
+            d["imgs"] += 1
+            d["redness"] += float(redness[sel].sum())
+            d["bright"] += float(gray[sel].sum())
+            d["sat"] += float(sat[sel].sum())
+            d["rough"] += float(rough[sel].sum())
+    for d in acc.values():
+        for k in ("redness", "bright", "sat", "rough"):
+            d[k] /= max(1, d["px"])
+    return {"n_img": n_img, "by_index": acc}
+
+
+def print_grade_stats(st: dict) -> None:
+    acc = st["by_index"]
+    if not acc:
+        print("没统计到东西 —— images/ 和 masks/ 对上了吗？")
+        return
+    total = sum(d["px"] for d in acc.values()) or 1
+    idxs = sorted(acc)
+    print(f"\n各索引底下原图像素的外观统计（{st['n_img']} 张）：")
+    print(f"  {'索引':>4} {'占像素':>8} {'出现图数':>8} {'红棕度':>8} "
+          f"{'亮度':>7} {'饱和度':>8} {'粗糙度':>8}")
+    for v in idxs:
+        d = acc[v]
+        print(f"  {v:>4d} {d['px'] / total:>8.2%} {d['imgs']:>8d} "
+              f"{d['redness']:>8.3f} {d['bright']:>7.1f} "
+              f"{d['sat']:>8.3f} {d['rough']:>8.2f}")
+
+    fg = [v for v in idxs if v != 0]
+    if len(fg) < 2:
+        return
+
+    def mono(key, want_up):
+        seq = [acc[v][key] for v in fg]
+        ok = all((b > a) if want_up else (b < a) for a, b in zip(seq, seq[1:]))
+        return ok, seq
+
+    checks = [("红棕度递增", "redness", True), ("亮度递减", "bright", False),
+              ("粗糙度递增", "rough", True), ("面积递减", "px", False),
+              ("出现图数递减", "imgs", False)]
+    print("\n  索引越大 = 越严重的话，应当看到：")
+    hit = 0
+    for label, key, up in checks:
+        ok, _ = mono(key, up)
+        hit += ok
+        print(f"    {'✓' if ok else '✗'} {label}")
+    print(f"\n  {hit}/{len(checks)} 项支持「索引越大越严重」。")
+    if hit >= 4:
+        print("  -> 按 {1: fair, 2: poor, 3: severe} 填，方向是对的。")
+    elif hit <= 1:
+        print("  -> 方向很可能是反的，class_map 要倒过来填。")
+    else:
+        print("  -> 证据不够干净，务必用 --grade-preview 出的图肉眼核对一遍。")
+
+
 def grade_preview(img_dir: str, msk_dir: str, out_dir: str, per_grade: int) -> int:
     """每个类别索引挑几张该索引占比最大的图，左原图右高亮，供肉眼定序。
 
@@ -196,6 +297,8 @@ def main() -> int:
     ap.add_argument("--grade-preview", metavar="DIR", default="",
                     help="每个类别索引导出几张预览图，用来肉眼核对等级顺序")
     ap.add_argument("--preview-per-grade", type=int, default=4)
+    ap.add_argument("--grade-stats", action="store_true",
+                    help="统计每个索引底下原图的外观，用数值判断等级方向")
     args = ap.parse_args()
 
     root = os.path.abspath(os.path.expanduser(args.root))
@@ -305,6 +408,9 @@ def main() -> int:
         print("⚠ 等级顺序（good<fair<poor<severe）填反了比不用这个数据集更糟，"
               "对照 'Corrosion Annotation Guidelines.pdf' 核实，"
               "再用 --grade-preview 抽查几张。")
+
+    if args.grade_stats and not args.dry_run:
+        print_grade_stats(grade_stats(img_out, msk_out))
 
     if args.grade_preview and not args.dry_run:
         n = grade_preview(img_out, msk_out, args.grade_preview,

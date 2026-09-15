@@ -590,3 +590,89 @@ def test_load_mask_warns_once_not_per_image(capsys):
     # 颜色多到不可能是标签图时，要指向真正的原因
     assert "更像是照片" in out, out
     B._WARNED.clear()
+
+
+# ---------------------------------------------------------------- 等级方向判定
+def _make_graded(root, reverse=False, n=24):
+    """造一批有明确外观梯度的图：越严重越红棕、越暗、越粗糙、面积越小。
+
+    mask 按真实数据的样子存成 VOC 配色的 RGB，不是 P 模式。
+    """
+    import numpy as np
+    from PIL import Image
+    from aircraft_vqa.adapters.base import _voc_palette
+
+    base = root / "Corrosion Condition State Classification" / "512x512" / "Train"
+    pd = base / "images_512"
+    md = base / "mask_512"
+    pd.mkdir(parents=True)
+    md.mkdir(parents=True)
+    pal = _voc_palette()
+    rng = np.random.default_rng(1)
+    look = {1: ((170, 150, 130), 3), 2: ((150, 95, 55), 10), 3: ((95, 50, 30), 22)}
+    freq = {1: 0.95, 2: 0.8, 3: 0.25}
+    for i in range(n):
+        img = np.full((256, 256, 3), 185, dtype="float32")
+        img += rng.normal(0, 2, img.shape)
+        m = np.zeros((256, 256), dtype="uint8")
+        y = 10
+        for g in (1, 2, 3):
+            if rng.random() >= freq[g]:
+                continue
+            h = [60, 35, 15][g - 1]
+            box = (slice(y, y + h), slice(20, 20 + h * 3))
+            rgb, noise = look[g]
+            img[box] = np.array(rgb, dtype="float32")
+            img[box] += rng.normal(0, noise, img[box].shape)
+            m[box] = (4 - g) if reverse else g
+            y += h + 8
+        Image.fromarray(np.clip(img, 0, 255).astype("uint8")).save(
+            pd / f"{i}.jpg", quality=95)
+        Image.fromarray(pal[m]).save(md / f"{i}.png")
+
+
+def _arrange(root):
+    import sys as _s
+    arr = _arr()
+    argv = _s.argv
+    _s.argv = ["x", "--root", str(root)]
+    try:
+        assert arr.main() == 0
+    finally:
+        _s.argv = argv
+    return arr
+
+
+def test_grade_stats_confirms_correct_ordering(tmp_path, capsys):
+    _make_graded(tmp_path)
+    arr = _arrange(tmp_path)
+    capsys.readouterr()
+    arr.print_grade_stats(arr.grade_stats(str(tmp_path / "images"),
+                                          str(tmp_path / "masks")))
+    out = capsys.readouterr().out
+    assert "5/5 项支持" in out, out
+    assert "方向是对的" in out
+
+
+def test_grade_stats_catches_reversed_ordering(tmp_path, capsys):
+    """方向反了必须报出来 —— 这正是填错 class_map 的那种情况。"""
+    _make_graded(tmp_path, reverse=True)
+    arr = _arrange(tmp_path)
+    capsys.readouterr()
+    arr.print_grade_stats(arr.grade_stats(str(tmp_path / "images"),
+                                          str(tmp_path / "masks")))
+    out = capsys.readouterr().out
+    assert "0/5 项支持" in out, out
+    assert "倒过来填" in out
+
+
+def test_grade_stats_excludes_background_from_ordering(tmp_path):
+    """索引 0 是背景（未腐蚀），不参与等级单调性判断。"""
+    _make_graded(tmp_path)
+    arr = _arrange(tmp_path)
+    st = arr.grade_stats(str(tmp_path / "images"), str(tmp_path / "masks"))
+    acc = st["by_index"]
+    assert set(acc) == {0, 1, 2, 3}
+    # 背景最亮、面积最大 —— 混进单调性检查会把结论带偏
+    assert acc[0]["px"] > max(acc[k]["px"] for k in (1, 2, 3))
+    assert acc[0]["bright"] > acc[3]["bright"]
