@@ -419,6 +419,44 @@ def gen_closeup(idx: int, rng: random.Random, size=(768, 576)) -> tuple:
     return out, anns
 
 
+# ------------------------------------------------------------------ 成像劣化
+
+# 真实检查照片里总有一部分是糊的、逆光的、被挡住的。这类图必须教模型说
+# "无法确认、建议补拍"，而不是硬给一个框。system 里写了这条要求，
+# 就得有样本把它教出来，否则那句话是空指令。
+QUALITY_KINDS = ["blur", "occlusion", "overexposure", "darkness"]
+
+
+def degrade(img: Image.Image, kind: str, rng: random.Random) -> Image.Image:
+    import numpy as np
+    w, h = img.size
+    if kind == "blur":
+        return img.filter(ImageFilter.GaussianBlur(rng.uniform(3.5, 7.0)))
+    if kind == "occlusion":
+        layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        d = ImageDraw.Draw(layer)
+        for _ in range(rng.randint(1, 2)):
+            bw = rng.randint(int(w * 0.35), int(w * 0.6))
+            bh = rng.randint(int(h * 0.3), int(h * 0.55))
+            x = rng.randint(-bw // 4, w - bw // 2)
+            y = rng.randint(-bh // 4, h - bh // 2)
+            g = rng.randint(20, 55)
+            d.rectangle([x, y, x + bw, y + bh], fill=(g, g, g + 4, 235))
+        out = img.convert("RGBA")
+        out.alpha_composite(layer.filter(ImageFilter.GaussianBlur(2.0)))
+        return out.convert("RGB")
+    arr = np.asarray(img, dtype=np.float32)
+    if kind == "overexposure":
+        yy, xx = np.mgrid[0:h, 0:w]
+        cx, cy = rng.uniform(0.3, 0.7) * w, rng.uniform(0.3, 0.7) * h
+        r = min(w, h) * rng.uniform(0.45, 0.8)
+        glow = np.clip(1.0 - (((xx - cx) ** 2 + (yy - cy) ** 2) ** 0.5) / r, 0, 1)
+        arr = arr + (glow[..., None] ** 1.5) * rng.uniform(150, 230)
+    else:                                        # darkness
+        arr = arr * rng.uniform(0.16, 0.30)
+    return Image.fromarray(np.clip(arr, 0, 255).astype("uint8"))
+
+
 # ------------------------------------------------------------------ 主流程
 def gen_image(idx: int, rng: random.Random, size=(768, 576)) -> tuple:
     w, h = size
@@ -511,8 +549,12 @@ def gen_image(idx: int, rng: random.Random, size=(768, 576)) -> tuple:
 
 
 def _emit(root: str, scene: str, counts: dict, rng: random.Random,
-          size: tuple, start: int) -> int:
-    """生成一个场景的 COCO 数据集，返回下一个全局序号。"""
+          size: tuple, start: int, degraded_frac: float = 0.0) -> int:
+    """生成一个场景的 COCO 数据集，返回下一个全局序号。
+
+    degraded_frac 的比例会被做成模糊/遮挡/过曝/欠曝的"拍废了"的图，
+    并在 COCO 的 image 条目里记 quality 字段，构建器据此只出"无法确认"样本。
+    """
     gen = gen_closeup if scene == "closeup" else gen_image
     prefix = "bolt" if scene == "closeup" else "panel"
     gi = start
@@ -522,10 +564,17 @@ def _emit(root: str, scene: str, counts: dict, rng: random.Random,
         images, annotations, aid = [], [], 1
         for i in range(n):
             img, anns = gen(gi, rng, size)
+            quality = None
+            if rng.random() < degraded_frac:
+                quality = rng.choice(QUALITY_KINDS)
+                img = degrade(img, quality, rng)
             fn = f"{prefix}_{gi:06d}.jpg"
             img.save(os.path.join(sdir, fn), quality=92)
-            images.append({"id": i, "file_name": fn,
-                           "width": img.width, "height": img.height})
+            entry = {"id": i, "file_name": fn,
+                     "width": img.width, "height": img.height}
+            if quality:
+                entry["quality"] = quality
+            images.append(entry)
             for a in anns:
                 annotations.append({"id": aid, "image_id": i,
                                     "category_id": NAME2ID[a["category"]],
@@ -541,8 +590,9 @@ def _emit(root: str, scene: str, counts: dict, rng: random.Random,
         id2n = {c["id"]: c["name"] for c in CATEGORIES}
         dist = Counter(id2n[a["category_id"]] for a in annotations)
         n_anom = len({a["image_id"] for a in annotations})
-        print(f"[{scene}/{split}] {n} 张（含缺陷 {n_anom} / 正常 {n - n_anom}），"
-              f"{len(annotations)} 个框")
+        n_deg = sum(1 for im in images if im.get("quality"))
+        print(f"[{scene}/{split}] {n} 张（含缺陷 {n_anom} / 正常 {n - n_anom}"
+              f"{f' / 成像不佳 {n_deg}' if n_deg else ''}），{len(annotations)} 个框")
         print(f"            {dict(dist.most_common())}")
     return gi
 
@@ -564,6 +614,9 @@ def main() -> int:
                     help="panel=蒙皮铆钉阵列；closeup=紧固件特写（螺纹损伤只在这里出现）")
     ap.add_argument("--closeup-frac", type=float, default=0.3,
                     help="scene=mix 时特写场景的占比")
+    ap.add_argument("--degraded-frac", type=float, default=0.09,
+                    help="做成模糊/遮挡/过曝/欠曝的比例，用于生成"
+                         "「无法确认，建议补拍」这类样本")
     args = ap.parse_args()
 
     root = os.path.expanduser(args.out)
@@ -584,7 +637,8 @@ def main() -> int:
     for scene, n in plan.items():
         if n <= 0:
             continue
-        gi = _emit(root, scene, _split_counts(n), rng, size, gi)
+        gi = _emit(root, scene, _split_counts(n), rng, size, gi,
+                   args.degraded_frac)
 
     print(f"\n完成 -> {root}")
     print("   configs/datasets.yaml 里对应两个条目："

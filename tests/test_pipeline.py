@@ -806,7 +806,7 @@ def test_sharegpt_single_turn_shape(tmp_path):
     b = VQABuilder(BuildConfig(max_qa_per_sample=12), TAX)
     r = next(x for x in b.build(_sample(tmp_path)) if not x.get("turns"))
     out = to_sharegpt(r)
-    assert list(out) == ["conversations", "images", "system"]
+    assert ["conversations", "images", "system"] == list(out)[:3]
     assert [c["from"] for c in out["conversations"]] == ["human", "gpt"]
     assert out["conversations"][0]["value"].startswith("<image>")
     assert out["conversations"][1]["value"] == r["answer"]
@@ -890,3 +890,198 @@ def test_mc_shrinks_options_when_pool_too_small(tmp_path):
             assert set(r["options"]) == {"裂纹", "凹坑"}
             assert r["answer"].startswith(r["answer_letter"])
             assert check_record(r) == []
+
+
+# ================================================================== 评审整改
+def _build_all(tmp_path, **cfg_kw):
+    """把所有任务权重拉满，一次性拿到各类样本。"""
+    cfg = BuildConfig(max_qa_per_sample=30, **cfg_kw)
+    cfg.task_weights = {k: 1.0 for k in cfg.task_weights}
+    b = VQABuilder(cfg, TAX)
+    out = []
+    for label in ("anomalous", "normal"):
+        for dt in ("fastener_missing", "crack", "corrosion", "scratch"):
+            out += b.build(_sample(tmp_path, label, dt, n=2))
+    return out
+
+
+def test_grounding_answers_are_pure_json(tmp_path):
+    """定位族 system 写了"不附加任何解释"，答案就必须是纯 JSON。"""
+    for r in _build_all(tmp_path):
+        if r["task"].startswith("grounding"):
+            a = r["answer"].strip()
+            assert a.startswith("[") and a.endswith("]"), (r["task"], a)
+            json.loads(a)
+
+
+def test_system_is_bound_to_family(tmp_path):
+    from aircraft_vqa.vqa.templates import SYSTEM_BY_FAMILY
+    fams = set()
+    for r in _build_all(tmp_path):
+        fams.add(r["family"])
+        assert r["system"] == SYSTEM_BY_FAMILY[r["family"]], r["task"]
+    assert fams == {"localization", "recognition", "dialog"}
+
+
+def test_negative_answer_never_mentions_unasked_defect(tmp_path):
+    """负样本模板复用正样本变量槽 -> 答案冒出问题里没提过的缺陷名。"""
+    for r in _build_all(tmp_path):
+        if r["task"] == "grounding_negative":
+            assert r["answer"].strip() == "[]"
+            assert check_record(r) == []
+
+
+def test_counterfactual_asks_absent_type_and_answers_empty(tmp_path):
+    n = 0
+    for r in _build_all(tmp_path):
+        if r["task"] == "grounding_counterfactual":
+            n += 1
+            assert r["answer"].strip() == "[]"
+            assert r["absent_type"] not in r["present_types"]
+            # 问的类型必须真的不在图里
+            assert TAX.zh(r["absent_type"]) in r["question"]
+            assert check_record(r) == []
+    assert n >= 2, "反事实负样本没生成出来"
+
+
+def test_counting_covers_zero_boundary(tmp_path):
+    cfg = BuildConfig(max_qa_per_sample=30)
+    cfg.task_weights = {k: 1.0 for k in cfg.task_weights}
+    b = VQABuilder(cfg, TAX)
+    counts = set()
+    for i in range(40):
+        s = _sample(tmp_path, "anomalous", "crack", n=(i % 3) + 1)
+        s.sample_id = f"t/count/{i}"
+        for r in b.build(s):
+            if r["task"] == "counting":
+                counts.add(r["count"])
+                assert check_record(r) == []
+    assert 0 in counts and len(counts) >= 2, counts
+
+
+def test_uncertainty_only_on_degraded_and_is_hedged(tmp_path):
+    cfg = BuildConfig(max_qa_per_sample=30)
+    cfg.task_weights = {k: 1.0 for k in cfg.task_weights}
+    b = VQABuilder(cfg, TAX)
+    s = _sample(tmp_path, "anomalous", "crack")
+    s.meta["image_quality"] = "blur"
+    recs = b.build(s)
+    assert recs and {r["task"] for r in recs} == {"uncertainty"}
+    for r in recs:
+        assert "bbox_2d" not in r["answer"]
+        assert check_record(r) == []
+    # 正常成像的图不该产出 uncertainty
+    assert all(r["task"] != "uncertainty"
+               for r in b.build(_sample(tmp_path, "anomalous", "crack")))
+
+
+def test_no_fake_reasoning_phrases(tmp_path):
+    """"依据是画面X处可见相应特征"是空话，等于教模型说套话装推理。"""
+    for r in _build_all(tmp_path):
+        text = r["answer"] + " ".join(
+            t["answer"] for t in r.get("turns", []))
+        assert "可见相应特征" not in text
+        assert "依据是画面" not in text
+
+
+def test_no_airworthiness_verdicts(tmp_path):
+    """严重度是按类型规则映射的，不是图上判读的，不能下适航结论。"""
+    for r in _build_all(tmp_path):
+        text = r["answer"] + " ".join(
+            t["answer"] for t in r.get("turns", []))
+        assert "不影响适航" not in text
+        assert "可放行" not in text
+        if r["task"] in ("severity_action", "grade_assessment"):
+            assert "AMM/SRM" in text and "持照人员" in text, "缺少限定语"
+
+
+def test_discrimination_gives_count_for_multiple_defects(tmp_path):
+    cfg = BuildConfig(max_qa_per_sample=30)
+    cfg.task_weights = {k: 1.0 for k in cfg.task_weights}
+    b = VQABuilder(cfg, TAX)
+    for r in b.build(_sample(tmp_path, "anomalous", "crack", n=3)):
+        if r["task"] == "discrimination" and r["yes_no"] == "yes":
+            assert "共 3 处" in r["answer"], r["answer"]
+
+
+def test_hard_negative_region_is_near_defect():
+    import random as _r
+    import statistics
+    from aircraft_vqa.geometry import iou
+    from aircraft_vqa.vqa.negatives import sample_clean_box
+    d = [[400, 300, 460, 360]]
+    cx, cy = 430, 330
+
+    def mean_dist(hard):
+        rng = _r.Random(0)
+        bs = [sample_clean_box(800, 600, d, rng, hard=hard) for _ in range(150)]
+        bs = [b for b in bs if b]
+        assert all(iou(b, d[0]) == 0.0 for b in bs)      # 仍然不重叠
+        return statistics.mean(
+            (((b[0] + b[2]) / 2 - cx) ** 2 + ((b[1] + b[3]) / 2 - cy) ** 2) ** 0.5
+            for b in bs)
+
+    assert mean_dist(True) < mean_dist(False) * 0.7
+
+
+def test_mc_answer_letters_are_spread(tmp_path):
+    """正确答案不能集中在某个字母上，否则模型直接背位置。"""
+    from collections import Counter
+    cfg = BuildConfig(max_qa_per_sample=30)
+    cfg.task_weights = {k: 1.0 for k in cfg.task_weights}
+    b = VQABuilder(cfg, TAX)
+    letters = Counter()
+    for i in range(120):
+        s = _sample(tmp_path, "anomalous", ["crack", "corrosion", "dent",
+                                            "scratch"][i % 4])
+        s.sample_id = f"t/mc/{i}"
+        for r in b.build(s):
+            if r["task"] == "classification_mc":
+                letters[r["answer_letter"]] += 1
+    assert len(letters) == 4, letters
+    lo, hi = min(letters.values()), max(letters.values())
+    assert hi <= lo * 2.2, letters      # 分布不能太偏
+
+
+def test_export_carries_id_and_meta(tmp_path):
+    from aircraft_vqa.export import EXPORTERS
+    r = _build_all(tmp_path)[0]
+    for name, fn in EXPORTERS.items():
+        out = fn(r)
+        assert out.get("id") == r["qa_id"], name
+        assert out["meta"]["task"] == r["task"], name
+        assert "defect_types" in out["meta"], name
+        assert "id" not in fn(r, with_meta=False), name
+
+
+def test_term_annotation_is_off_by_default(tmp_path):
+    for r in _build_all(tmp_path):
+        assert "（missing fastener）" not in r["answer"]
+    b = VQABuilder(BuildConfig(max_qa_per_sample=30, term_annotation=True), TAX)
+    b.cfg.task_weights = {k: 1.0 for k in b.cfg.task_weights}
+    texts = " ".join(r["answer"] for r in b.build(_sample(tmp_path)))
+    assert "（" in texts
+
+
+def test_uncertainty_fix_matches_cause(tmp_path):
+    """遮挡却建议"在良好光照下补拍"是答非所问，补救措施要跟成因对上。"""
+    from aircraft_vqa.vqa import templates as TT
+    cfg = BuildConfig(max_qa_per_sample=30)
+    cfg.task_weights = {k: 1.0 for k in cfg.task_weights}
+    b = VQABuilder(cfg, TAX)
+    assert set(TT.UNCERTAIN_FIX) == set(TT.UNCERTAIN_REASON)
+    for q in TT.UNCERTAIN_REASON:
+        s = _sample(tmp_path, "anomalous", "crack")
+        s.sample_id = f"t/unc/{q}"
+        s.meta["image_quality"] = q
+        recs = b.build(s)
+        assert recs
+        for r in recs:
+            assert TT.UNCERTAIN_FIX[q] in r["answer"], (q, r["answer"])
+            assert check_record(r) == []
+    # 遮挡的样本不该出现"光照"这种不相干的补救措施
+    s = _sample(tmp_path, "anomalous", "crack")
+    s.sample_id = "t/unc/occ2"
+    s.meta["image_quality"] = "occlusion"
+    assert all("照明" not in r["answer"] and "光照" not in r["answer"]
+               for r in b.build(s))

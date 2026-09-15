@@ -61,12 +61,36 @@ def check_record(r: dict, check_image: bool = False) -> list:
         errs.append("image_missing")
 
     task = r.get("task", "")
+
+    # 定位族的 system 写死了"不附加任何解释"，答案就必须是纯 JSON。
+    # 之前漏了这条检查，结果 grounding_negative 答成了 "[]\n未见划伤…"，
+    # 等于用数据教模型不遵循 system。
+    if task.startswith("grounding"):
+        stripped = r.get("answer", "").strip()
+        if not (stripped.startswith("[") and stripped.endswith("]")):
+            errs.append("grounding_answer_not_pure_json")
+
+    # 答案不能提问题里没出现过的缺陷名（负样本模板复用正样本变量槽的典型症状）
+    if task in ("grounding_negative", "grounding_counterfactual"):
+        q = r.get("question", "")
+        for name in re.findall(r"[\u4e00-\u9fa5]{2,6}", r.get("answer", "")):
+            if len(name) >= 3 and name not in q:
+                errs.append("answer_mentions_unasked_term")
+                break
+
+    if task == "uncertainty":
+        a = r.get("answer", "")
+        if not re.search(r"无法确认|不足以|不可辨|补拍|重新取证", a):
+            errs.append("uncertainty_without_hedge")
+        if "bbox_2d" in a:
+            errs.append("uncertainty_with_boxes")
+
     if task.startswith("grounding") or task == "counting":
         boxes = _parse_boxes(r["answer"])
         if boxes is None:
             errs.append("answer_not_json")
         else:
-            if task == "grounding_negative" and boxes:
+            if task in ("grounding_negative", "grounding_counterfactual") and boxes:
                 errs.append("negative_with_boxes")
             if task in ("grounding_single", "grounding_all") and not boxes \
                     and r.get("label") == "anomalous":
@@ -87,7 +111,7 @@ def check_record(r: dict, check_image: bool = False) -> list:
                     if c[0] < 0 or c[1] < 0 or c[2] > w or c[3] > h:
                         errs.append("box_out_of_image"); break
         if task == "counting":
-            m = re.search(r"共发现\s*(\d+)\s*处", r["answer"])
+            m = re.search(r"共\s*(\d+)\s*处", r["answer"])
             if m and boxes is not None and int(m.group(1)) != len(boxes):
                 errs.append("count_mismatch")
 
@@ -100,6 +124,14 @@ def check_record(r: dict, check_image: bool = False) -> list:
         opts = r.get("options") or []
         if len(set(opts)) != len(opts):
             errs.append("duplicate_options")
+
+    # system 必须和任务族匹配 —— 定位族用识别族的 system 就会出现
+    # "契约说只输出 JSON、实际答案带解释"的错配
+    fam, sysmsg = r.get("family"), r.get("system", "")
+    if fam and sysmsg:
+        from .vqa.templates import SYSTEM_BY_FAMILY
+        if sysmsg != SYSTEM_BY_FAMILY.get(fam, sysmsg):
+            errs.append("system_family_mismatch")
 
     if task == "discrimination":
         yn = r.get("yes_no")

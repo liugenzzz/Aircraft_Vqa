@@ -26,7 +26,8 @@ from aircraft_vqa.export import EXPORTERS
 TASK_DESC = {
     "grounding_single": ("缺陷定位", "给定缺陷类型，输出该类型所有实例的边界框"),
     "grounding_all": ("缺陷定位", "检出图中全部异常，输出框 + 类型"),
-    "grounding_negative": ("缺陷定位", "对正常图提同样要求，正确答案是空列表（抑制幻觉）"),
+    "grounding_negative": ("缺陷定位", "对正常图提同样要求，正确答案是空列表"),
+    "grounding_counterfactual": ("缺陷定位", "对有缺陷的图问一个图里不存在的类型，答空列表（更难的负样本）"),
     "referring_region": ("缺陷定位", "给定一个坐标框，判断该区域内是否存在异常（局部聚焦）"),
     "counting": ("缺陷定位", "清点某类缺陷数量并逐个定位"),
     "region_word": ("缺陷定位", "用方位词描述缺陷位置，不给坐标（语义定位）"),
@@ -37,6 +38,7 @@ TASK_DESC = {
     "severity_action": ("缺陷识别", "严重度评估 + 维修处置建议"),
     "object_recognition": ("缺陷识别", "被检对象识别与航空语境"),
     "grade_assessment": ("缺陷识别", "有序程度分级判定（仅带等级标注的源会产生）"),
+    "uncertainty": ("缺陷识别", "成像模糊/遮挡/过曝时答无法确认并建议补拍"),
     "multi_turn": ("多轮追问", "有无 → 定位 → 处置，复刻机务问诊流程"),
 }
 ORDER = list(TASK_DESC)

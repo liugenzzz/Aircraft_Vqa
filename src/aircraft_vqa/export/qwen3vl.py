@@ -21,6 +21,16 @@ from typing import Iterable, Optional
 IMAGE_TOKEN = "<image>"
 
 
+# 训练框架会忽略不认识的键，所以把溯源信息带在条目里不影响训练，
+# 但做分层评测（按任务/按数据源/按缺陷类型看指标）和排错时非常关键。
+META_KEYS = ("task", "family", "dataset", "category", "split", "label",
+             "defect_types", "coord_mode", "license")
+
+
+def _meta(r: dict) -> dict:
+    return {k: r[k] for k in META_KEYS if k in r}
+
+
 def _img_path(path: str, image_root: Optional[str], relative: bool) -> str:
     if relative and image_root:
         try:
@@ -38,7 +48,7 @@ def _turn_pairs(r: dict) -> list:
 
 
 def to_llamafactory(r: dict, image_root=None, relative=False,
-                    with_system=True) -> dict:
+                    with_system=True, with_meta: bool = True) -> dict:
     msgs = []
     if with_system and r.get("system"):
         msgs.append({"role": "system", "content": r["system"]})
@@ -47,11 +57,16 @@ def to_llamafactory(r: dict, image_root=None, relative=False,
         msgs.append({"role": "user",
                      "content": f"{IMAGE_TOKEN}{q}" if i == 0 else q})
         msgs.append({"role": "assistant", "content": a})
-    return {"messages": msgs, "images": [_img_path(r["image"], image_root, relative)]}
+    out = {"messages": msgs,
+           "images": [_img_path(r["image"], image_root, relative)]}
+    if with_meta:
+        out["id"] = r.get("qa_id")
+        out["meta"] = _meta(r)
+    return out
 
 
 def to_sharegpt(r: dict, image_root=None, relative=False,
-                with_system=True) -> dict:
+                with_system=True, with_meta: bool = True) -> dict:
     """ShareGPT 格式：conversations 用 from/value，system 提到顶层。
 
         {"conversations": [{"from": "human", "value": "<image>问题"},
@@ -69,10 +84,14 @@ def to_sharegpt(r: dict, image_root=None, relative=False,
            "images": [_img_path(r["image"], image_root, relative)]}
     if with_system and r.get("system"):
         out["system"] = r["system"]
+    if with_meta:
+        out["id"] = r.get("qa_id")
+        out["meta"] = _meta(r)
     return out
 
 
-def to_swift(r: dict, image_root=None, relative=False, with_system=True) -> dict:
+def to_swift(r: dict, image_root=None, relative=False, with_system=True,
+             with_meta: bool = True) -> dict:
     msgs = []
     if with_system and r.get("system"):
         msgs.append({"role": "system", "content": r["system"]})
@@ -80,13 +99,16 @@ def to_swift(r: dict, image_root=None, relative=False, with_system=True) -> dict
         msgs.append({"role": "user",
                      "content": f"{IMAGE_TOKEN}{q}" if i == 0 else q})
         msgs.append({"role": "assistant", "content": a})
-    out = {"messages": msgs, "images": [_img_path(r["image"], image_root, relative)]}
-    if r.get("task", "").startswith("grounding") or r.get("task") == "counting":
-        out["_meta"] = {"task": r["task"], "coord_mode": r.get("coord_mode")}
+    out = {"messages": msgs,
+           "images": [_img_path(r["image"], image_root, relative)]}
+    if with_meta:
+        out["id"] = r.get("qa_id")
+        out["meta"] = _meta(r)
     return out
 
 
-def to_openai(r: dict, image_root=None, relative=False, with_system=True) -> dict:
+def to_openai(r: dict, image_root=None, relative=False, with_system=True,
+              with_meta: bool = True) -> dict:
     msgs = []
     if with_system and r.get("system"):
         msgs.append({"role": "system", "content": r["system"]})
@@ -99,7 +121,11 @@ def to_openai(r: dict, image_root=None, relative=False, with_system=True) -> dic
         else:
             msgs.append({"role": "user", "content": [{"type": "text", "text": q}]})
         msgs.append({"role": "assistant", "content": [{"type": "text", "text": a}]})
-    return {"messages": msgs}
+    out = {"messages": msgs}
+    if with_meta:
+        out["id"] = r.get("qa_id")
+        out["meta"] = _meta(r)
+    return out
 
 
 EXPORTERS = {
@@ -110,12 +136,13 @@ EXPORTERS = {
 }
 
 
-def export_records(records: Iterable[dict], out_path: str, fmt: str = "llamafactory",
+def export_records(records: Iterable[dict], out_path: str, fmt: str = "sharegpt",
                    image_root: Optional[str] = None, relative: bool = False,
-                   with_system: bool = True, as_json_array: bool = False) -> int:
+                   with_system: bool = True, as_json_array: bool = False,
+                   with_meta: bool = True) -> int:
     """写出 jsonl（默认）或 json 数组（LLaMA-Factory 的 dataset_info 也支持）。"""
     fn = EXPORTERS[fmt]
-    items = [fn(r, image_root, relative, with_system) for r in records]
+    items = [fn(r, image_root, relative, with_system, with_meta) for r in records]
     os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
         if as_json_array:

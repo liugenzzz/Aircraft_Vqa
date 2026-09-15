@@ -73,7 +73,7 @@ defect_types:
     group: structure
     severity_default: critical
     aliases: [crack, cracked, cracks, crazing_crack, fracture, fissure, rupture]
-    action: 立即停用该区域，做无损检测确定裂纹长度并按 SRM 制定修理方案
+    action: 停用该区域并做无损检测确定裂纹长度，按该机型 SRM 的可接受限度判定修理方案
 
   dent:
     zh: 凹坑
@@ -197,10 +197,10 @@ grades:
         zh: 截面损失
         severity: critical
         desc: 腐蚀已造成可测量的截面损失，承载能力下降
-        action: 立即停用该区域，测量剩余截面并按 SRM 制定换件或补强方案
+        action: 停用该区域并测量剩余截面，按该机型 SRM 的可接受限度判定换件或补强
 
 # 严重度
 severity:
-  minor:    {zh: 轻微, en: minor,    desc: 不影响适航，监控并按计划处理}
-  major:    {zh: 中等, en: major,    desc: 需在本次检修中处理}
-  critical: {zh: 严重, en: critical, desc: 影响结构完整性，需立即处置}
+  minor:    {zh: 轻微, en: minor,    desc: 通常可监控观察，按计划安排处理}
+  major:    {zh: 中等, en: major,    desc: 通常需在本次检修中处理}
+  critical: {zh: 严重, en: critical, desc: 可能影响结构完整性，通常需立即停用并进一步评估}

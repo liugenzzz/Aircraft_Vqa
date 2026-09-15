@@ -126,6 +126,7 @@ def main() -> int:
         active_defect_types=cfg.get("active_defect_types"),
         question_bank=cfg.get("question_bank"),
         lang=cfg.get("lang", "zh"),
+        term_annotation=cfg.get("term_annotation", False),
     )
     if bcfg.active_defect_types:
         print(f"[scope] 本期缺陷范围 {len(bcfg.active_defect_types)} 类："
@@ -212,7 +213,8 @@ def main() -> int:
         dump_records(os.path.join(args.out, f"{name}.raw.jsonl"), recs)
         n = export_records(recs, os.path.join(args.out, f"{name}.{fmt}.jsonl"),
                            fmt=fmt, with_system=exp.get("with_system", True),
-                           relative=exp.get("relative_paths", False))
+                           relative=exp.get("relative_paths", False),
+                           with_meta=exp.get("with_meta", True))
         n_total += n
         print(f"[export] {name}: {n} 条 -> {args.out}/{name}.{fmt}.jsonl")
 

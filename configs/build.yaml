@@ -7,6 +7,9 @@ box_label: zh            # 框里的 label 用中文 / en / canonical
 # 问法语言：zh = 只用中文问法（默认）；bilingual = 保留英文问法。
 # 英文问法原本占 3% 左右，不足以教会双语却会引入中英混杂，所以默认关掉。
 lang: zh
+# 答案里是否给缺陷名加英文术语括注（"漆层剥落（paint peeling）"）。
+# 只在部分任务出现会显得中英混杂不一致，所以默认关掉。
+term_annotation: false
 
 max_qa_per_sample: 4
 n_options: 4
@@ -43,20 +46,27 @@ class_balance_tasks: [classification_open, classification_mc]
 #   异常类别识别准确率 >= 88% -> classification_open + classification_mc
 # 以及"局部结构视觉聚焦与语义定位"这项功能要求 -> grounding / referring / region_word
 task_ratio:
-  # ---- 缺陷识别（对标 >=90%）16% ----
-  discrimination: 0.16
-  # ---- 异常类别识别（对标 >=88%）20% ----
-  classification_open: 0.11
-  classification_mc: 0.09
-  # ---- 视觉聚焦与语义定位 46% ----
-  grounding_single: 0.16
-  grounding_all: 0.12
-  grounding_negative: 0.09     # 正常图答空列表，抑制幻觉的关键，别删
-  referring_region: 0.05       # 给框问该区域 —— 直接对应"局部结构聚焦"
-  region_word: 0.02            # 方位词 —— 对应"语义定位"
-  counting: 0.02
-  # ---- 多轮追问 8%（第一轮也计入缺陷识别指标）----
+  # ---- 缺陷识别（对标 >=90%）15% ----
+  discrimination: 0.15
+  # ---- 异常类别识别（对标 >=88%）18% ----
+  classification_open: 0.10
+  classification_mc: 0.08
+  # ---- 视觉聚焦与语义定位 45% ----
+  grounding_single: 0.13
+  grounding_all: 0.10
+  # 负样本合计 14%：正常图 6% + 反事实 8%。
+  # 反事实（有缺陷的图上问一个不存在的类型 -> []）比正常图难得多，
+  # 是抑制"用户说有就一定有"的关键，权重要高于正常图负样本。
+  grounding_negative: 0.06
+  grounding_counterfactual: 0.08
+  referring_region: 0.06       # 难负样本贴着缺陷旁边采，对应"局部结构聚焦"
+  region_word: 0.02
+  counting: 0.03               # 含 0/1/多 三种边界
+  # ---- 多轮追问 8% ----
   multi_turn: 0.08
+  # ---- 不确定表达 4%（成像模糊/遮挡/过曝 -> 无法确认，建议补拍）----
+  # system 里写了"无法确认时直接说明"，必须有样本把它教出来，否则是空指令
+  uncertainty: 0.04
   # ---- 辅助能力 10% ----
   description: 0.06
   severity_action: 0.03
@@ -69,6 +79,9 @@ export:
   format: sharegpt          # sharegpt | llamafactory | swift | openai
   with_system: true
   relative_paths: false
+  # 在条目里带 id 与 meta（task/dataset/split/label/defect_types…）。
+  # 训练框架会忽略不认识的键，但分层评测和排错离不开它们。
+  with_meta: true
 
 llm:
   provider: none            # none | openai（OpenAI 兼容接口，含 DashScope）

@@ -66,7 +66,10 @@ class CocoAdapter(BaseAdapter):
                     sample_id=f"{self.name}/{cat_name}/{split}/{stem}",
                     image_path=path, label="anomalous" if boxes else "normal",
                     category=cat_name, split=split, boxes=boxes or None,
-                    box_labels=labels or None, meta={"coco_image_id": im["id"]})
+                    box_labels=labels or None,
+                    meta={"coco_image_id": im["id"],
+                          **({"image_quality": im["quality"]}
+                             if im.get("quality") else {})})
                 if s:
                     yield s
 
