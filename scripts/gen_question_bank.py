@@ -136,11 +136,11 @@ def validate(task: str, q: str, seen: set, style: str = "instruction") -> str:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="configs/question_bank.json")
-    ap.add_argument("--model", default="qwen-plus")
-    ap.add_argument("--base-url", default=os.environ.get("LLM_BASE_URL", ""))
-    ap.add_argument("--api-key-env", default="LLM_API_KEY")
+    ap.add_argument("--llm-config", default="configs/llm_pool.json",
+                    help="模型池配置")
+    ap.add_argument("--purpose", default="paraphrase",
+                    help="用 llm_pool.json 里哪个用途的参数（扩问法建议高温度）")
     ap.add_argument("--per-task", type=int, default=20)
-    ap.add_argument("--temperature", type=float, default=0.9)
     ap.add_argument("--tasks", nargs="*", default=None)
     ap.add_argument("--style", default="instruction",
                     choices=["instruction", "loose"],
@@ -169,27 +169,23 @@ def main() -> int:
               f"{sum(len(p) for p in prompts.values()) // len(prompts)} 字符输入。")
         return 0
 
-    key = os.environ.get(args.api_key_env, "")
-    if not key:
-        print(f"环境变量 {args.api_key_env} 未设置。\n"
-              f"想先看看会发什么 prompt，用 --dry-run。")
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "src"))
+    from aircraft_vqa.llm import LLMPool
+    pool = LLMPool.from_file_or_none(args.llm_config)
+    if not pool or not pool.available(args.purpose):
+        print(f"模型池不可用（{args.llm_config}）。先填好配置，"
+              f"再跑 scripts/llm_pool_check.py 确认连得上。\n"
+              f"想先看会发什么 prompt，用 --dry-run。")
         return 1
-    try:
-        from openai import OpenAI
-    except ImportError:
-        print("需要 openai 包：pip install openai")
-        return 1
-    client = OpenAI(api_key=key, base_url=args.base_url or None)
+    print(f"模型池：\n{pool.describe()}\n")
 
     bank, stats = {}, {}
     for task, prompt in prompts.items():
-        try:
-            resp = client.chat.completions.create(
-                model=args.model, temperature=args.temperature,
-                messages=[{"role": "user", "content": prompt}])
-            text = resp.choices[0].message.content
-        except Exception as e:
-            print(f"[fail] {task}: {e}")
+        text, used = pool.chat([{"role": "user", "content": prompt}],
+                               purpose=args.purpose)
+        if not text:
+            print(f"[fail] {task}: 池里所有模型都没返回")
             continue
         m = re.search(r"\[.*\]", text, re.S)
         if not m:
@@ -214,17 +210,18 @@ def main() -> int:
             kept.append(q.strip())
         bank[task] = kept
         stats[task] = {"kept": len(kept), "rejected": rejected}
-        print(f"[ok] {task}: 收 {len(kept)}/{len(cands)} 条"
+        print(f"[ok] {task}({used}): 收 {len(kept)}/{len(cands)} 条"
               + (f"，拒收原因 {rejected}" if rejected else ""))
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as f:
-        json.dump({"version": 1, "model": args.model, "style": args.style,
+        json.dump({"version": 1, "pool": args.llm_config, "style": args.style,
                    "generated_at": datetime.now(timezone.utc).isoformat(),
                    "stats": stats, "questions": bank}, f,
                   ensure_ascii=False, indent=1)
     total = sum(len(v) for v in bank.values())
-    print(f"\n共扩写 {total} 条问法 -> {args.out}")
+    print(f"\n模型池调用统计：{json.dumps(pool.stats.summary(), ensure_ascii=False)}")
+    print(f"共扩写 {total} 条问法 -> {args.out}")
     print("在 configs/build.yaml 里设置 question_bank 指向它即可生效。")
     return 0
 

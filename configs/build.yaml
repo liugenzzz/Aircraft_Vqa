@@ -87,8 +87,7 @@ export:
   with_meta: true
 
 llm:
-  provider: none            # none | openai（OpenAI 兼容接口，含 DashScope）
-  model: qwen-plus
-  base_url: ""              # 例：https://dashscope.aliyuncs.com/compatible-mode/v1
-  api_key_env: LLM_API_KEY
-  temperature: 0.6
+  # 模型池配置文件。留空 = 不启用改写层，流水线照常跑。
+  # 池里可以放多个模型，按权重路由、失败自动转移，改配置不用动代码。
+  pool_config: configs/llm_pool.json
+  purpose: rewrite          # 用哪个用途的参数，见 llm_pool.json 的 purposes

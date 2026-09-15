@@ -6,14 +6,12 @@
 坐标、数量、缺陷类型、严重度一律原样保留 —— prompt 里对此做了硬约束，
 改写后还会再跑一遍 qc.check_record，改坏了就回退到模板答案。
 
-离线环境下 provider="none"，整条流水线照常工作。
+没有配模型池时改写层自动关闭，整条流水线照常工作。
 """
 from __future__ import annotations
 
 import json
-import os
 import re
-import time
 from typing import Optional
 
 REWRITE_SYSTEM = (
@@ -47,43 +45,34 @@ PROTECTED_TASKS = _protected_tasks()
 
 
 class LLMRewriter:
-    def __init__(self, provider: str = "none", model: str = "",
-                 base_url: str = "", api_key_env: str = "LLM_API_KEY",
-                 temperature: float = 0.6, max_retries: int = 2,
-                 timeout: int = 60):
-        self.provider = provider
-        self.model = model
-        self.base_url = base_url or os.environ.get("LLM_BASE_URL", "")
-        self.api_key = os.environ.get(api_key_env, "")
-        self.temperature = temperature
-        self.max_retries = max_retries
-        self.timeout = timeout
-        self._client = None
-        if provider == "openai":
-            if not self.api_key:
-                raise RuntimeError(f"环境变量 {api_key_env} 未设置")
-            from openai import OpenAI  # 延迟导入，离线时不需要装
-            self._client = OpenAI(api_key=self.api_key,
-                                  base_url=self.base_url or None)
+    """答案改写。模型走 LLMPool —— 多个端点按权重路由、失败自动转移。
+
+    只要给一个 pool 就能用；不给就是关闭状态，整条流水线照常跑。
+    """
+
+    def __init__(self, pool=None, purpose: str = "rewrite"):
+        self.pool = pool
+        self.purpose = purpose
+        self.last_model: Optional[str] = None
+
+    @classmethod
+    def from_config(cls, path: Optional[str], purpose: str = "rewrite"):
+        from ..llm import LLMPool
+        pool = LLMPool.from_file_or_none(path)
+        if pool and not pool.available(purpose):
+            pool = None            # 配置在但没有可用模型 = 关闭
+        return cls(pool, purpose)
 
     @property
     def enabled(self) -> bool:
-        return self.provider != "none"
+        return self.pool is not None
 
     def _call(self, text: str) -> Optional[str]:
-        for i in range(self.max_retries + 1):
-            try:
-                resp = self._client.chat.completions.create(
-                    model=self.model, temperature=self.temperature,
-                    timeout=self.timeout,
-                    messages=[{"role": "system", "content": REWRITE_SYSTEM},
-                              {"role": "user", "content": text}])
-                return resp.choices[0].message.content.strip()
-            except Exception:
-                if i == self.max_retries:
-                    return None
-                time.sleep(1.5 * (i + 1))
-        return None
+        out, model = self.pool.chat(
+            [{"role": "system", "content": REWRITE_SYSTEM},
+             {"role": "user", "content": text}], purpose=self.purpose)
+        self.last_model = model
+        return out.strip() if out else None
 
     @staticmethod
     def _facts(text: str) -> tuple:
@@ -111,9 +100,11 @@ class LLMRewriter:
         record["answer_template"] = original
         record["answer"] = new
         record["rewritten"] = True
+        record["rewritten_by"] = self.last_model
         return record
 
 
 def load_rewriter(cfg: dict) -> LLMRewriter:
-    return LLMRewriter(**{k: v for k, v in (cfg or {}).items()
-                          if k in LLMRewriter.__init__.__code__.co_varnames})
+    """cfg 取自 build.yaml 的 llm 段，只认 pool_config 一个键。"""
+    return LLMRewriter.from_config((cfg or {}).get("pool_config"),
+                                   (cfg or {}).get("purpose", "rewrite"))

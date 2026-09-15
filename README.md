@@ -29,9 +29,10 @@ python scripts/download/download_all.py --data-root ~/data/raw
 python scripts/download/download_all.py --data-root ~/data/raw --list   # 只看清单
 python scripts/download/download_all.py --data-root ~/data/raw --check  # 手动下完体检
 
-# 1.5) 可选：用大模型把问法扩写一轮（一次性，十几次调用）
-python scripts/gen_question_bank.py --dry-run          # 先看 prompt
-python scripts/gen_question_bank.py --per-task 25      # 需要 LLM_API_KEY
+# 1.5) 可选：配好模型池后，用大模型扩写问法
+export LOCAL_LLM_KEY=xxx                    # key 走环境变量
+python scripts/llm_pool_check.py            # 先体检端点
+python scripts/gen_question_bank.py --per-task 25
 
 # 1.8) 数据体检：正式构建前先看清每个源被读成了什么
 python scripts/preflight.py --data-root ~/data/raw
@@ -66,6 +67,7 @@ data/vqa/
 | [docs/01_dataset_survey.md](docs/01_dataset_survey.md) | **数据源调研**：20+ 个候选数据集的规模/标注/授权/适配度，三层拼装方案与配比建议 |
 | [docs/02_pipeline.md](docs/02_pipeline.md) | 方案设计：统一中间表示、缺陷本体、12 个子任务、Qwen3-VL 坐标约定、两层平衡 |
 | [docs/03_quality_control.md](docs/03_quality_control.md) | 质检项、人工抽检方法、已知的坑、验收清单 |
+| [docs/04_llm_pool.md](docs/04_llm_pool.md) | 模型池配置：路由策略、用途参数、扩容与排错 |
 | [scripts/download/README.md](scripts/download/README.md) | 各数据集的获取方式与授权 |
 
 ## 数据源一句话结论
@@ -98,7 +100,8 @@ configs/
   datasets.yaml     数据源清单（含授权与下载方式）
   taxonomy.yaml     缺陷本体：14 类缺陷 + 对象 + 严重度 + 维修处置建议
   build.yaml        构建配置：缺陷范围(8类)、坐标模式、按指标排的任务配比、
-                    正负与类别双重平衡
+                    正负与类别双重平衡（可用 --set 临时覆盖）
+  llm_pool.json     模型池：多个端点、权重、路由策略、用途级生成参数
 src/aircraft_vqa/
   schema.py         统一中间表示 UnifiedSample
   taxonomy.py       类别名归一化
@@ -106,6 +109,7 @@ src/aircraft_vqa/
   adapters/         MVTec / LOCO / VisA / Real-IAD / COCO / YOLO / 掩码分割
   vqa/              模板库+问法池、构建器、干扰项、负样本采样、大模型改写层
   export/           ShareGPT / LLaMA-Factory / ms-swift / OpenAI 四种导出格式
+  llm/              模型池：多端点按权重/轮询路由、失败转移、用途级参数
   balance.py        两层平衡、分组切分、配比达成度
   qc.py             20+ 项自动质检（含按输出格式校验答案形态、幻觉闸门）
 scripts/
@@ -114,8 +118,9 @@ scripts/
   ingest / build_vqa / visualize / make_demo_data
   preflight          数据体检：每个源读到什么、类型映射对不对、mask 有没有读到
   gen_question_bank  大模型扩写问法（一次性离线跑，强制指令式）
+  llm_pool_check     模型池体检：逐个端点确认连得上
   llm_smoke          大模型改写层的 100 条烟测（含事实指纹比对与并排对照）
-tests/              126 个回归测试，含按官方目录结构造的
+tests/              147 个回归测试，含按官方目录结构造的
                     MVTec AD / LOCO / Real-IAD / 腐蚀集 / COCO 夹具
 ```
 

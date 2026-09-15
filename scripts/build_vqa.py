@@ -29,6 +29,30 @@ from aircraft_vqa.vqa import BuildConfig, VQABuilder
 from aircraft_vqa.vqa.llm import load_rewriter
 
 
+def apply_overrides(cfg: dict, pairs) -> None:
+    """--set a.b=1 形式的临时覆盖。
+
+    调配比、改平衡系数是高频操作，每次都去改 yaml 容易忘了改回来，
+    也不好在脚本里批量跑对比实验。值按 JSON 解析，解析不了就当字符串。
+    """
+    for item in pairs or []:
+        if "=" not in item:
+            raise SystemExit(f"--set 要写成 KEY=VALUE，收到：{item}")
+        key, _, raw = item.partition("=")
+        try:
+            val = json.loads(raw)
+        except Exception:
+            val = raw
+        node = cfg
+        parts = key.strip().split(".")
+        for p in parts[:-1]:
+            if not isinstance(node.get(p), dict):
+                node[p] = {}
+            node = node[p]
+        node[parts[-1]] = val
+        print(f"[override] {key} = {val!r}")
+
+
 def _mix_general(train_path: str, general_path: str, ratio: float,
                  seed: int) -> None:
     """把通用指令数据按比例混进 train 导出文件。
@@ -85,11 +109,18 @@ def main() -> int:
                          "防止窄领域微调把模型的语言层带偏")
     ap.add_argument("--mix-ratio", type=float, default=0.08,
                     help="通用数据在 train 中的占比，建议 0.05~0.10")
+    ap.add_argument("--set", action="append", default=None, metavar="KEY=VALUE",
+                    help="临时覆盖 build.yaml 里的任意配置，可给多次。"
+                         "支持点号路径与 JSON 值，例如："
+                         "--set normal_per_anomalous=1.5 "
+                         "--set task_ratio.grounding_single=0.2 "
+                         "--set active_defect_types='[\"crack\",\"corrosion\"]'")
     ap.add_argument("--ratio-strict", action="store_true",
                     help="严格服从 task_ratio（会按最稀缺任务缩量，数据量小很多）")
     args = ap.parse_args()
 
     cfg = yaml.safe_load(open(args.config, encoding="utf-8"))
+    apply_overrides(cfg, args.set)
     tax = get_taxonomy(os.path.abspath(args.taxonomy))
     os.makedirs(args.out, exist_ok=True)
 

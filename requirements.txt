@@ -4,5 +4,6 @@ numpy>=1.24
 pillow>=10.0
 tqdm>=4.65
 
-# 可选：启用大模型改写层时才需要
+# 可选：启用模型池（改写层 / 扩问法）时才需要
+# pip install openai
 # openai>=1.30

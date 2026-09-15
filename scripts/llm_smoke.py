@@ -9,11 +9,18 @@
   3. 输出一份并排对照文件，人工过一遍；
   4. 给出回退率与各类拒收原因的统计。
 
-    export LLM_API_KEY=sk-xxx
-    export LLM_BASE_URL=http://127.0.0.1:8000/v1        # 本地 27B 的地址
-    python scripts/llm_smoke.py --n 100 --model qwen3-27b
+    # 1) 把端点和模型填进 configs/llm_pool.json，key 走环境变量
+    export LOCAL_LLM_KEY=xxx
+    # 2) 先体检，确认模型通
+    python scripts/llm_pool_check.py
+    # 3) 跑烟测
+    python scripts/llm_smoke.py --n 100
+    python scripts/llm_smoke.py --n 100 --llm-config configs/llm_pool.prod.json
 
     python scripts/llm_smoke.py --dry-run          # 不调模型，只看会送什么进去
+
+池里可以放多个模型，按权重路由、失败自动转移；报告会按模型分别统计采纳率，
+方便看出哪个模型改写质量更好。
 """
 from __future__ import annotations
 
@@ -64,10 +71,10 @@ def main() -> int:
     ap.add_argument("--config", default="configs/build.yaml")
     ap.add_argument("--out", default="data/vqa/llm_smoke.jsonl")
     ap.add_argument("--n", type=int, default=100)
-    ap.add_argument("--model", default=None)
-    ap.add_argument("--base-url", default=None)
-    ap.add_argument("--api-key-env", default="LLM_API_KEY")
-    ap.add_argument("--temperature", type=float, default=None)
+    ap.add_argument("--llm-config", default=None,
+                    help="模型池配置；默认取 build.yaml 里 llm.pool_config")
+    ap.add_argument("--purpose", default="rewrite",
+                    help="用 llm_pool.json 里哪个用途的参数")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--dry-run", action="store_true",
                     help="不调模型，只打印将要送进去的条目")
@@ -95,13 +102,13 @@ def main() -> int:
         return 0
 
     cfg = (yaml.safe_load(open(args.config, encoding="utf-8")) or {}).get("llm", {})
-    rw = LLMRewriter(
-        provider="openai",
-        model=args.model or cfg.get("model", "qwen-plus"),
-        base_url=args.base_url or cfg.get("base_url", ""),
-        api_key_env=args.api_key_env,
-        temperature=(args.temperature if args.temperature is not None
-                     else cfg.get("temperature", 0.6)))
+    pool_path = args.llm_config or cfg.get("pool_config")
+    rw = LLMRewriter.from_config(pool_path, args.purpose)
+    if not rw.enabled:
+        print(f"模型池不可用（{pool_path}）。先填好 configs/llm_pool.json，"
+              f"再跑 scripts/llm_pool_check.py 确认连得上。")
+        return 1
+    print(f"\n模型池：\n{rw.pool.describe()}\n")
 
     rows, reasons = [], Counter()
     for i, r in enumerate(picked, 1):
@@ -112,6 +119,7 @@ def main() -> int:
             reasons[r.get("rewrite_rejected", "no_response")] += 1
         rows.append({
             "任务": r["task"], "输出格式": r.get("output_format"),
+            "改写模型": r.get("rewritten_by"),
             "问": r["question"],
             "原答案": before,
             "改写后": r["answer"] if ok else None,
@@ -139,6 +147,10 @@ def main() -> int:
             print(f"  {k:14s} {v:4d}  {tip}")
     by_task = Counter(x["任务"] for x in rows if x["是否采纳"])
     print(f"各任务采纳数：{dict(by_task.most_common())}")
+    by_model = Counter(x["改写模型"] for x in rows if x["是否采纳"])
+    if by_model:
+        print(f"各模型采纳数：{dict(by_model.most_common())}")
+    print(f"\n模型池调用统计：{json.dumps(rw.pool.stats.summary(), ensure_ascii=False)}")
     print(f"\n并排对照 -> {args.out}")
     print("请人工过一遍：改写后是否更自然、有没有丢信息、有没有编造。")
     print("采纳率低于 60% 就别全量跑，先调 vqa/llm.py 里的 REWRITE_SYSTEM。")

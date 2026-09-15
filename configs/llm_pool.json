@@ -1,0 +1,98 @@
+{
+  "version": 1,
+  "_说明": "模型池。改完直接重跑，不用动代码。字段说明见 docs/04_llm_pool.md",
+  "_密钥": "所有 key 走环境变量，不要写进这个文件（会进 git）。运行前 export LOCAL_LLM_KEY=...",
+
+  "strategy": "round_robin",
+  "_strategy说明": "同一模型的多个副本用轮询做负载均衡最合适；若池里是不同档位的模型，改成 weighted 按权重混用",
+  "seed": 0,
+
+  "request": {
+    "timeout": 120,
+    "max_retries": 1,
+    "retry_backoff": 1.5,
+    "failover": true,
+    "_failover说明": "某个副本挂了自动换下一个，不让整批任务失败"
+  },
+
+  "generation": {
+    "temperature": 0.6,
+    "top_p": 0.9,
+    "max_tokens": 1024
+  },
+
+  "models": [
+    {
+      "name": "qwen27b-8001",
+      "enabled": true,
+      "weight": 1,
+      "model": "Qwen3.8-27B",
+      "base_url": "http://10.107.226.27:8001/v1/chat/completions",
+      "api_key_env": "LOCAL_LLM_KEY",
+      "tags": ["rewrite", "paraphrase", "judge"],
+      "concurrency": 8,
+      "timeout": 120
+    },
+    {
+      "name": "qwen27b-8002",
+      "enabled": true,
+      "weight": 1,
+      "model": "Qwen3.8-27B",
+      "base_url": "http://10.107.226.27:8002/v1/chat/completions",
+      "api_key_env": "LOCAL_LLM_KEY",
+      "tags": ["rewrite", "paraphrase", "judge"],
+      "concurrency": 8,
+      "timeout": 120
+    },
+    {
+      "name": "qwen27b-8003",
+      "enabled": true,
+      "weight": 1,
+      "model": "Qwen3.8-27B",
+      "base_url": "http://10.107.226.27:8003/v1/chat/completions",
+      "api_key_env": "LOCAL_LLM_KEY",
+      "tags": ["rewrite", "paraphrase", "judge"],
+      "concurrency": 8,
+      "timeout": 120
+    },
+    {
+      "name": "qwen27b-8004",
+      "enabled": false,
+      "weight": 1,
+      "model": "Qwen3.8-27B",
+      "base_url": "http://10.107.226.27:8004/v1/chat/completions",
+      "api_key_env": "LOCAL_LLM_KEY",
+      "tags": ["rewrite", "paraphrase", "judge"],
+      "notes": "暂停中。要用把 enabled 改成 true 即可"
+    }
+  ],
+
+  "_其余可用副本": [
+    "10.107.230.59:8001-8004",
+    "10.200.100.103:8001-8004",
+    "10.107.238.7:8001-8004",
+    "10.107.234.47:8001-8004"
+  ],
+  "_扩容说明": "照着上面的条目复制一份、改 name 和 base_url 即可。全部 20 个副本都开的话，轮询会自动摊平负载",
+
+  "purposes": {
+    "rewrite": {
+      "models": ["*"],
+      "strategy": "round_robin",
+      "generation": {"temperature": 0.55, "max_tokens": 512},
+      "_说明": "改写答案：要稳，温度低，事实不能漂"
+    },
+    "paraphrase": {
+      "models": ["*"],
+      "strategy": "round_robin",
+      "generation": {"temperature": 0.95, "top_p": 0.95, "max_tokens": 2048},
+      "_说明": "扩写问法：要多样，温度高"
+    },
+    "judge": {
+      "tags": ["judge"],
+      "strategy": "failover",
+      "generation": {"temperature": 0.0, "max_tokens": 256},
+      "_说明": "一致性判定：温度 0 求确定性"
+    }
+  }
+}
