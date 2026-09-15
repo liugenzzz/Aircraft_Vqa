@@ -17,6 +17,7 @@ from collections import Counter
 import _bootstrap  # noqa: F401
 import yaml
 
+from aircraft_vqa.balance import diversity as st_mod_diversity
 from aircraft_vqa.balance import (balance_samples, cap_class_imbalance,
                                   class_distribution, dedup, group_split,
                                   quota_sample, ratio_gap, stats)
@@ -240,6 +241,18 @@ def main() -> int:
     if args.mix_general:
         _mix_general(os.path.join(args.out, f"train.{fmt}.jsonl"),
                      args.mix_general, args.mix_ratio, cfg.get("seed", 0))
+
+    # 多样性门限：模板法最容易"换汤不换药"，构建完必须报出来
+    _d = st_mod_diversity(records)
+    thin = {k: v for k, v in _d["unique_questions_per_task"].items() if v < 30}
+    if thin:
+        print(f"[diversity] 以下任务的不同问法数不足 30（模板复读风险）：")
+        for k, v in sorted(thin.items(), key=lambda x: x[1]):
+            print(f"            {k:26s} {v}")
+        print("            -> 跑 scripts/gen_question_bank.py 用大模型扩写问法")
+    share = _d.get("top20_share_excl_empty", 0)
+    print(f"[diversity] 排除空列表后，top20 答案占比 {share:.1%}"
+          + ("  ⚠ 超过 5%，有模板在复读" if share > 0.05 else ""))
 
     st = stats(records)
     with open(os.path.join(args.out, "stats.json"), "w", encoding="utf-8") as f:

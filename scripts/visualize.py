@@ -63,7 +63,7 @@ def main() -> int:
             continue
         im = Image.open(r["image"]).convert("RGB")
         d = ImageDraw.Draw(im)
-        W, H = im.size
+        W, H = im.size   # 用实际图像尺寸，raw 里 image_hw 同值
         for j, b in enumerate(parse_boxes(r["answer"])):
             x1, y1, x2, y2 = b["bbox_2d"]
             if r.get("coord_mode", "norm1000") == "norm1000":

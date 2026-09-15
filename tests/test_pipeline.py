@@ -1272,3 +1272,23 @@ def test_negative_breakdown_separates_two_abilities():
     b = negative_breakdown(recs)
     assert b["on_normal_image"] == 3 and b["counterfactual"] == 2
     assert b["total_negative"] == 5
+
+
+def test_all_answer_templates_are_fully_formatted(tmp_path):
+    """答案模板加了占位符却漏 format，会静默产出带 {obj} 的脏数据。"""
+    import re as _re
+    ref = tmp_path / "ref.jpg"
+    Image.new("RGB", (400, 300), (128, 128, 128)).save(ref)
+    cfg = BuildConfig(max_qa_per_sample=30)
+    cfg.task_weights = {k: 1.0 for k in cfg.task_weights}
+    b = VQABuilder(cfg, TAX)
+    b.set_reference_pool({("t", "panel"): [str(ref)] * 3})
+    n = 0
+    for label in ("anomalous", "normal"):
+        for dt in ("crack", "corrosion", "scratch"):
+            for r in b.build(_sample(tmp_path, label, dt)):
+                n += 1
+                text = r["answer"] + " ".join(
+                    t["answer"] for t in r.get("turns", []))
+                assert not _re.search(r"\{[a-z_]+\}", text), (r["task"], text)
+    assert n > 20

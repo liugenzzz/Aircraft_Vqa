@@ -94,7 +94,7 @@ def main() -> int:
             "说明": desc,
             "来源": f"{r['dataset']}/{r['category']}",
             "图片": r.get("images") or r["image"],
-            "图片尺寸": [r["width"], r["height"]],
+            "图片尺寸(HW)": r.get("image_hw"),
             "图像状态": r.get("image_status"),
             "图里有的缺陷": r.get("image_defect_types") or [],
             "这条问的缺陷": r.get("asked_defect_types") or [],

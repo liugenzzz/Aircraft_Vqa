@@ -621,10 +621,11 @@ class VQABuilder:
             items = "；".join(
                 f"画面{d.region or '中部'}出现{self.tax.zh(d.type)}"
                 for d in s.defects[:4])
-            a = rng.choice(T.A_PAIR_COMPARE_POS).format(items=items)
+            a = rng.choice(T.A_PAIR_COMPARE_POS).format(items=items,
+                                                        **self._ctx(s))
             atypes = s.defect_types
         else:
-            a = rng.choice(T.A_PAIR_COMPARE_NEG)
+            a = rng.choice(T.A_PAIR_COMPARE_NEG).format(**self._ctx(s))
             atypes = []
         r = self._rec(s, "pair_compare", "compare", q, a, None,
                       {"answer_defect_types": atypes,

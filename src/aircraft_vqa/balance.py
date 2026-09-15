@@ -210,7 +210,12 @@ def diversity(records: list, top_k: int = 20) -> dict:
 
     ans_counter = Counter(a_all)
     top = ans_counter.most_common(top_k)
+    # "[]" 是负样本的**正确答案**，不是模板复读，单独算一档才看得清真实复读率
+    free = [a for a in a_all if a.strip() != "[]"]
+    free_counter = Counter(free)
+    free_top = free_counter.most_common(top_k)
     return {
+        "n_empty_answer": len(a_all) - len(free),
         "unique_questions_per_task": {k: len(v) for k, v in
                                       sorted(by_task_q.items())},
         "distinct_2_question": distinct_n(q_all, 2),
@@ -219,7 +224,12 @@ def diversity(records: list, top_k: int = 20) -> dict:
         if a_all else 0.0,
         f"top{top_k}_answer_share": round(
             sum(c for _, c in top) / len(a_all), 4) if a_all else 0.0,
-        "top5_answers": [{"n": c, "text": t[:70]} for t, c in top[:5]],
+        # 真正该看的是这个：排除 [] 之后，高频答案还占多少
+        f"top{top_k}_share_excl_empty": round(
+            sum(c for _, c in free_top) / len(free), 4) if free else 0.0,
+        "unique_answer_ratio_excl_empty": round(
+            len(free_counter) / len(free), 4) if free else 0.0,
+        "top5_answers": [{"n": c, "text": t[:70]} for t, c in free_top[:5]],
     }
 
 
