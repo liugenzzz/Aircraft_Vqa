@@ -8,6 +8,65 @@ import numpy as np
 
 # ---------------------------------------------------------------- 连通域
 
+def _components(small: np.ndarray):
+    """连通域 -> [(area, y0, y1, x0, x1)]。有 scipy 就走它，没有返回 None。
+
+    scipy.ndimage.label 默认就是 4-连通，和下面那份手写 BFS 语义一致；
+    512x512 的大片连通域上快两个数量级，真实锈蚀 mask 动辄就是这种。
+    """
+    try:
+        from scipy import ndimage
+    except ImportError:
+        return None
+    lab, n = ndimage.label(small)
+    if not n:
+        return []
+    areas = np.bincount(lab.ravel(), minlength=n + 1)
+    out = []
+    for i, sl in enumerate(ndimage.find_objects(lab)):
+        if sl is None:
+            continue
+        out.append((int(areas[i + 1]), int(sl[0].start), int(sl[0].stop) - 1,
+                    int(sl[1].start), int(sl[1].stop) - 1))
+    return out
+
+
+def _components_bfs(small: np.ndarray):
+    """没有 scipy 时的退路：手写 4-连通 BFS。"""
+    sh, sw = small.shape
+    visited = np.zeros((sh, sw), dtype=bool)
+    comps = []
+    for sy in range(sh):
+        row = small[sy]
+        if not row.any():
+            continue
+        for sx in np.nonzero(row)[0]:
+            sx = int(sx)
+            # visited 会被下面的 BFS 边走边改，而这一行的候选列表是循环开始
+            # 前就算好的。不在这里复查，同一个连通域里每个已访问像素都会被
+            # 当成新起点，各自吐出一个 1 像素的框 —— 一块完整锈斑能炸成几十处。
+            if visited[sy, sx]:
+                continue
+            q = deque([(sy, sx)])
+            visited[sy, sx] = True
+            y0 = y1 = sy
+            x0 = x1 = int(sx)
+            area = 0
+            while q:
+                cy, cx = q.popleft()
+                area += 1
+                if cy < y0: y0 = cy
+                if cy > y1: y1 = cy
+                if cx < x0: x0 = cx
+                if cx > x1: x1 = cx
+                for ny, nx in ((cy - 1, cx), (cy + 1, cx), (cy, cx - 1), (cy, cx + 1)):
+                    if 0 <= ny < sh and 0 <= nx < sw and small[ny, nx] and not visited[ny, nx]:
+                        visited[ny, nx] = True
+                        q.append((ny, nx))
+            comps.append((area, y0, y1, x0, x1))
+    return comps
+
+
 def connected_boxes(mask: np.ndarray,
                     min_area_ratio: float = 2e-4,
                     max_components: int = 12,
@@ -31,30 +90,9 @@ def connected_boxes(mask: np.ndarray,
         small = m
 
     sh, sw = small.shape
-    visited = np.zeros((sh, sw), dtype=bool)
-    comps = []
-    for sy in range(sh):
-        row = small[sy]
-        if not row.any():
-            continue
-        for sx in np.nonzero(row & ~visited[sy])[0]:
-            q = deque([(sy, int(sx))])
-            visited[sy, sx] = True
-            y0 = y1 = sy
-            x0 = x1 = int(sx)
-            area = 0
-            while q:
-                cy, cx = q.popleft()
-                area += 1
-                if cy < y0: y0 = cy
-                if cy > y1: y1 = cy
-                if cx < x0: x0 = cx
-                if cx > x1: x1 = cx
-                for ny, nx in ((cy - 1, cx), (cy + 1, cx), (cy, cx - 1), (cy, cx + 1)):
-                    if 0 <= ny < sh and 0 <= nx < sw and small[ny, nx] and not visited[ny, nx]:
-                        visited[ny, nx] = True
-                        q.append((ny, nx))
-            comps.append((area, y0, y1, x0, x1))
+    comps = _components(small)
+    if comps is None:
+        comps = _components_bfs(small)
 
     comps.sort(key=lambda c: -c[0])
     total_small = sh * sw
