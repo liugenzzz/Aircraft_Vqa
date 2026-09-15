@@ -73,7 +73,10 @@ def main() -> int:
     ap.add_argument("--only", nargs="*", default=None, help="只看这些源")
     ap.add_argument("--out", default="/tmp/raw_classes")
     ap.add_argument("--per-class", type=int, default=3)
-    ap.add_argument("--scan", type=int, default=4000, help="最多扫多少条样本")
+    ap.add_argument("--scan", type=int, default=0,
+                    help="最多扫多少条样本（0 = 全扫，默认）。"
+                         "设了上限就只看前 N 条 —— 很多数据集把全正常的 train "
+                         "排在前面，截断会一个缺陷都碰不到")
     ap.add_argument("--unmapped-only", action="store_true",
                     help="只导出落到 other_anomaly 的类名")
     args = ap.parse_args()
@@ -96,25 +99,47 @@ def main() -> int:
 
         # 原始类名 -> [(样本, 该类名的缺陷列表)]
         by_raw = defaultdict(list)
+        seen_raw: dict = defaultdict(int)      # 扫到的全部类名，用于交代去向
+        n_seen = n_anom = 0
         ad = build_adapter({k: v for k, v in spec.items()
                             if not k.startswith("_")}, taxonomy=tax)
-        for i, s in enumerate(ad.iter_samples()):
-            if i >= args.scan:
+        print(f"\n{'=' * 60}\n{name}：扫描中…")
+        for s in ad.iter_samples():
+            n_seen += 1
+            if args.scan and n_seen > args.scan:
                 break
+            if s.defects:
+                n_anom += 1
             groups = defaultdict(list)
             for d in s.defects:
                 if not d.type_raw:
                     continue
+                seen_raw[d.type_raw] += 1
                 if args.unmapped_only and d.type != "other_anomaly":
                     continue
                 groups[d.type_raw].append(d)
             for raw, ds in groups.items():
                 if len(by_raw[raw]) < args.per_class * 4:   # 留点余量再随机挑
                     by_raw[raw].append((s, ds))
+
+        print(f"  扫了 {n_seen} 条样本，其中带缺陷 {n_anom} 条，"
+              f"共 {len(seen_raw)} 种原始类名")
         if not by_raw:
+            # 导不出东西时必须交代原因，不能只甩一句"共导出 0 张"
+            if not seen_raw:
+                print("  一个带类名的缺陷都没扫到。"
+                      + ("这个源本来就只有掩码没有类名；"
+                         if n_anom else "连带缺陷的样本都没有 —— ")
+                      + ("" if n_anom else
+                         "多半是掩码路径没对上，先跑 preflight 看带框率。"))
+            elif args.unmapped_only:
+                print("  加了 --unmapped-only，而扫到的类名已经全部映射好了：")
+                for raw, n in sorted(seen_raw.items(), key=lambda kv: -kv[1]):
+                    print(f"    {raw:24s} ×{n:<6d} -> {tax.map_defect(raw)}")
+                print("  去掉 --unmapped-only 可以把它们也导出来复核。")
             continue
 
-        print(f"\n{'=' * 60}\n{name}：{len(by_raw)} 种原始类名")
+        print(f"  分出 {len(by_raw)} 种待看的类名")
         rng = random.Random(0)
         for raw in sorted(by_raw):
             mapped = tax.map_defect(raw)
