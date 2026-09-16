@@ -105,9 +105,14 @@ defect_types:
     en: scratch
     group: surface
     severity_default: minor
-    # HS 是 Real-IAD 的类别码，拼音缩写：划伤（Hua Shang）。
+    # HS / CH 是 Real-IAD 的类别码，拼音缩写：
+    #   HS 划伤（Hua Shang）—— 单道有向的刻痕
+    #   CH 擦花（Ca Hua）  —— 摩擦蹭出的表面花伤，材料被蹭起而不是切开
+    # 源数据把两者分开标，本体里都归"划伤"：处置方式相同（抛光补涂），
+    # 且本期 8 类不做这一层细分。原始类名留在 Defect.type_raw 里，
+    # 将来要细分不用重新读数据。
     aliases: [scratch, scratches, scratch_head, scratch_neck, scratched, scuff,
-              abrasion, gouge, nick, hs]
+              abrasion, gouge, nick, hs, ch]
     action: 抛光去除应力集中源并补涂保护涂层
 
   paint_peeling:

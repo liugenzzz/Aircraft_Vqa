@@ -4,6 +4,7 @@
 这几个 adapter 是照公开文档写的，没跑过真实数据。夹具复刻目录结构、
 命名规则与 mask 组织方式，结构性 bug 在这里暴露，不用等下完 10GB。
 """
+import io
 import json
 import os
 import sys
@@ -782,7 +783,48 @@ def test_missing_part_is_not_fastener_missing():
     assert tax.area_scales_severity("part_missing") is False
 
 
-def test_unverified_code_stays_unmapped():
-    """CH 还没看过图，宁可留在 other_anomaly 也不猜 ——
-    猜错了不报错，训练完才发现模型把一类缺陷叫成另一类。"""
-    assert get_taxonomy().map_defect("CH") == "other_anomaly"
+def test_unknown_code_falls_to_other_anomaly():
+    """没见过的类别码必须落到 other_anomaly 并被体检报出来，
+    而不是被子串匹配硬认成某一类 —— 猜错了不报错，
+    训练完才发现模型把一类缺陷叫成另一类。"""
+    tax = get_taxonomy()
+    for code in ("ZZ", "QJ", "class_7", "未知码"):
+        assert tax.map_defect(code) == "other_anomaly", code
+
+
+def test_ch_maps_to_scratch_not_dent():
+    """CH（擦花）看图确认过：表层蹭伤，材料被蹭起，不是凹进去的。
+
+    在本期 8 类里它唯一可能走错的去处就是 dent，钉住这条。
+    """
+    tax = get_taxonomy()
+    assert tax.map_defect("CH") == "scratch"
+    assert tax.map_defect("ch") == "scratch"
+    assert tax.map_defect("CH") != tax.map_defect("AK")   # 别和凹坑混
+
+
+def test_real_iad_codes_all_mapped():
+    """六个类别码全部有归属，preflight 不该再报未映射。"""
+    tax = get_taxonomy()
+    codes = {"QS": "part_missing", "ZW": "contamination", "HS": "scratch",
+             "AK": "dent", "YW": "contamination", "CH": "scratch"}
+    for code, want in codes.items():
+        assert tax.map_defect(code) == want, (code, tax.map_defect(code))
+
+
+def test_raw_class_survives_mapping(tmp_path):
+    """HS 和 CH 都归 scratch，但源标签必须留在 type_raw 里 ——
+    将来要细分这两者，不用重新读一遍数据。"""
+    root = make_real_iad(str(tmp_path / "Real-IAD"), shape="train_test")
+    import json as _json
+    jp = os.path.join(root, "realiad_jsons", "switch.json")
+    d = _json.loads(io.open(jp, encoding="utf-8").read())
+    d["test"][0]["anomaly_class"] = "CH"
+    io.open(jp, "w", encoding="utf-8").write(_json.dumps(d))
+
+    samples = _run({"name": "real_iad", "adapter": "real_iad", "root": root,
+                    "image_dir": "realiad_512", "json_dir": "realiad_jsons",
+                    "category": "switch"})
+    d0 = [d for s in samples for d in s.defects][0]
+    assert d0.type == "scratch"
+    assert d0.type_raw == "CH"

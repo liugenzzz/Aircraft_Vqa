@@ -87,13 +87,13 @@ def test_empty_result_explains_filter(tmp_path, capsys):
 def test_unmapped_code_is_exported(tmp_path, capsys):
     """没映射的类名要真能导出来看。"""
     m = _load()
-    cfg = _setup(tmp_path, code="CH")        # 故意留着没映射的
+    cfg = _setup(tmp_path, code="ZZ")        # 本体里没有的码
     capsys.readouterr()
     _run(m, cfg, tmp_path, "--unmapped-only")
     out = capsys.readouterr().out
-    assert "CH" in out and "未映射" in out, out
+    assert "ZZ" in out and "未映射" in out, out
     files = [p.name for p in (tmp_path / "out").iterdir()]
-    assert any("CH" in f for f in files), files
+    assert any("ZZ" in f for f in files), files
 
 
 def test_no_annotations_at_all_is_explained(tmp_path, capsys):
