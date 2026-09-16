@@ -16,3 +16,5 @@ configs/*.local.yaml
 
 # 模型池的本机 key / 端点差异，不入库（仓库是公开的）
 configs/*.local.json
+configs/*.local.json.*
+configs/*.local.yaml.*

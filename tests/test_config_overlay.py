@@ -139,3 +139,29 @@ def test_preflight_flags_sources_present_but_disabled(tmp_path, capsys):
     # 有数据没接上，就不能说"没有发现问题"
     assert "没有发现问题" not in out, out
     assert rc == 0
+
+
+def test_local_file_backups_are_also_ignored():
+    """--init-local 覆盖前会存一份 .bak —— 那里面同样是 key。
+
+    真实踩到的坑：.gitignore 只写了 configs/*.local.json，
+    匹配不到 .bak 后缀，备份文件差点被 git add 进公开仓库。
+    """
+    import subprocess
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for name in ("configs/llm_pool.local.json.bak",
+                 "configs/llm_pool.local.json.20240101",
+                 "configs/datasets.local.yaml.bak"):
+        r = subprocess.run(["git", "check-ignore", "-q", name],
+                           cwd=root, capture_output=True)
+        assert r.returncode == 0, f"{name} 没被 gitignore 挡住"
+
+
+def test_no_credential_files_are_tracked():
+    """兜底：仓库里不该有任何 .local 凭据文件被追踪。"""
+    import subprocess
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    out = subprocess.run(["git", "ls-files"], cwd=root,
+                         capture_output=True, text=True).stdout
+    bad = [ln for ln in out.splitlines() if ".local." in ln]
+    assert not bad, f"这些凭据文件被 git 追踪了：{bad}"

@@ -367,4 +367,8 @@ def test_big_model_stays_out_of_bulk_work():
     for purpose in ("rewrite", "paraphrase"):
         names = [m.name.lower() for m in p.order(purpose)]
         assert not any("122b" in n for n in names), (purpose, names)
-        assert len(names) == 7, (purpose, len(names))
+        # 别写死副本数 —— 副本会上下线，写死了每次增减都要来改测试。
+        # 要盯的是"干活的副本不止一个"和"把关模型没被拉进来"。
+        assert len(names) >= 2, (purpose, names)
+        assert len(names) == len([m for m in p.models
+                                  if "122b" not in m.name.lower()]), names

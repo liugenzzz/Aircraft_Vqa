@@ -93,48 +93,6 @@
         "judge"
       ],
       "api_key_env": "LOCAL_LLM_KEY"
-    },
-    {
-      "name": "qwen27b-27-8001",
-      "enabled": true,
-      "weight": 1,
-      "model": "Qwen3.8-27B",
-      "base_url": "http://10.107.226.27:8001/v1/chat/completions",
-      "concurrency": 8,
-      "tags": [
-        "rewrite",
-        "paraphrase",
-        "judge"
-      ],
-      "api_key_env": "LOCAL_LLM_KEY"
-    },
-    {
-      "name": "qwen27b-27-8002",
-      "enabled": true,
-      "weight": 1,
-      "model": "Qwen3.8-27B",
-      "base_url": "http://10.107.226.27:8002/v1/chat/completions",
-      "concurrency": 8,
-      "tags": [
-        "rewrite",
-        "paraphrase",
-        "judge"
-      ],
-      "api_key_env": "LOCAL_LLM_KEY"
-    },
-    {
-      "name": "qwen27b-27-8003",
-      "enabled": true,
-      "weight": 1,
-      "model": "Qwen3.8-27B",
-      "base_url": "http://10.107.226.27:8003/v1/chat/completions",
-      "concurrency": 8,
-      "tags": [
-        "rewrite",
-        "paraphrase",
-        "judge"
-      ],
-      "api_key_env": "LOCAL_LLM_KEY"
     }
   ],
   "purposes": {
@@ -170,6 +128,7 @@
     }
   },
   "_其余可用副本": [
+    "10.107.226.27:8001-8003 已下线（访问不了），需要时再加回来。",
     "10.107.230.59 / 10.200.100.103 / 10.107.238.7 / 10.107.234.47 上还有若干同型副本，",
     "需要更高吞吐时按上面的格式往 models 里加即可。"
   ]
