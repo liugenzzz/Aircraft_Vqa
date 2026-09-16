@@ -388,14 +388,34 @@ class LLMPool:
                 continue
             t0 = time.time()
             try:
+                kw = {}
+                tkw = spec.template_kwargs()
+                if tkw:
+                    kw["extra_body"] = {"chat_template_kwargs": tkw}
+                # max_tokens 给宽一点：万一服务端不吃 enable_thinking，
+                # 16 个 token 全用来想事情了，正文一个字都出不来，
+                # 体检就会把一个其实能用的副本报成"只返回了思维链"。
                 resp = self._client(spec).chat.completions.create(
-                    model=spec.model, timeout=min(20, spec.timeout),
+                    model=spec.model, timeout=min(30, spec.timeout),
                     messages=[{"role": "user", "content": "回复两个字：就绪"}],
-                    max_tokens=16)
-                out.append({"name": spec.name, "status": "ok",
-                            "latency_s": round(time.time() - t0, 2),
-                            "reply": (resp.choices[0].message.content or
-                                      "")[:20]})
+                    max_tokens=256, **kw)
+                content, reasoning = _msg_text(resp.choices[0].message)
+                text = strip_reasoning(content)
+                row = {"name": spec.name,
+                       "latency_s": round(time.time() - t0, 2),
+                       "reply": text[:20]}
+                if text:
+                    row["status"] = "ok"
+                    if reasoning.strip() or content != text:
+                        # 能用，但服务端没关掉思考 —— 批量跑会白烧大量 token
+                        row["status"] = "ok_thinking_on"
+                        row["detail"] = ("返回里带思维链，已剥离。"
+                                         "服务端没吃 enable_thinking=false，"
+                                         "批量跑会多花不少 token")
+                else:
+                    row["status"] = "only_reasoning"
+                    row["detail"] = "只返回了思维链，没有正文"
+                out.append(row)
             except Exception as e:
                 out.append({"name": spec.name, "status": "fail",
                             "detail": f"{type(e).__name__}: {e}"[:160]})

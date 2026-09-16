@@ -21,6 +21,8 @@ import _bootstrap  # noqa: F401
 from aircraft_vqa.llm import LLMPool
 
 ADVICE = {
+    "only_reasoning": "只返回了思维链没有正文 —— 调大 max_tokens，"
+                      "或确认服务端吃 enable_thinking=false",
     "no_credential": "环境变量没设，或者 base_url 也没填",
     "disabled": "配置里 enabled: false",
     "fail": "端点连不上 / 模型 id 不对 / key 无效，看 detail",
@@ -61,18 +63,29 @@ def main() -> int:
     print("\n逐个体检中……")
     rows = pool.health()
     ok = 0
+    warn = 0
     for r in rows:
         st = r["status"]
         if st == "ok":
             ok += 1
             print(f"  ✓ {r['name']:22s} {r['latency_s']:>5.2f}s  "
                   f"回复「{r['reply']}」")
+        elif st == "ok_thinking_on":
+            ok += 1
+            warn += 1
+            print(f"  ⚠ {r['name']:22s} {r['latency_s']:>5.2f}s  "
+                  f"回复「{r['reply']}」（带思维链，已剥离）")
         else:
             print(f"  ✗ {r['name']:22s} {st}  —— {ADVICE.get(st, '')}")
             if r.get("detail"):
                 print(f"      {r['detail']}")
 
     print(f"\n可用 {ok}/{len(rows)}")
+    if warn:
+        print(f"其中 {warn} 个服务端没关掉思考。答案会被客户端剥干净，不影响正确性，"
+              "但批量跑会白烧不少 token。\n"
+              "  想在服务端关：vLLM 启动加 --reasoning-parser，或确认它吃 "
+              "chat_template_kwargs.enable_thinking=false")
     if ok == 0:
         print("一个都连不上。检查：\n"
               "  1. base_url 是否带 /v1 后缀\n"
