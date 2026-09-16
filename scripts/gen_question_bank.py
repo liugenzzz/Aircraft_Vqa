@@ -134,6 +134,35 @@ def validate(task: str, q: str, seen: set, style: str = "instruction") -> str:
     return ""
 
 
+def parse_array(text: str):
+    """从模型输出里取出字符串数组，返回 (列表, 是否是从截断输出里抢救的)。
+
+    先按完整 JSON 数组解析；失败就退而求其次，把已经写完整的字符串项捡出来。
+    输出被 max_tokens 切掉时，前面那几十条其实是好的，整批丢掉太浪费 ——
+    而且"一条都没有"会让人以为是模型不听话，其实只是没写完。
+    """
+    m = re.search(r"\[.*\]", text, re.S)
+    if m:
+        try:
+            v = json.loads(m.group(0))
+            if isinstance(v, list):
+                return v, False
+        except Exception:
+            pass
+    start = text.find("[")
+    if start < 0:
+        return None, False
+    # 捡出所有成对引号里的内容（跳过转义引号），最后一条没闭合的自然落选
+    items = re.findall(r'"((?:[^"\\]|\\.)*)"', text[start:])
+    out = []
+    for it in items:
+        try:
+            out.append(json.loads(f'"{it}"'))
+        except Exception:
+            continue
+    return (out, True) if out else (None, False)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="configs/question_bank.json")
@@ -147,6 +176,9 @@ def main() -> int:
                     choices=["instruction", "loose"],
                     help="instruction=强制指令式并做风格校验（默认，"
                          "对模型语言层扰动最小）；loose=只校验占位符")
+    ap.add_argument("--chunk", type=int, default=25,
+                    help="每轮最多要几条。要太多的话模型后半段质量下滑，"
+                         "也更容易撞上截断")
     ap.add_argument("--max-rounds", type=int, default=3,
                     help="每个任务最多问几轮 —— 风格校验会拒掉一部分，"
                          "一轮常常不够数")
@@ -193,22 +225,35 @@ def main() -> int:
         风格校验挡不住重复，只有 seen 能挡，白烧调用。
         """
         prompt = prompts[task]
+        rejected_extra = {}
+        # 条数必须每轮都改写成本轮真正要的 want。只在续轮改的话，第一轮
+        # prompt 里写着 per_task（比如 40）而预算是按 chunk（25）算的，
+        # 两边对不上，照样会截断。
+        prompt = prompt.replace(f"请再写 {args.per_task} 条",
+                                f"请再写 {want} 条")
         if have:
             prompt += ("\n\n【已经有了，不要重复，也不要只改动一两个字】\n"
                        + "\n".join(f"- {x}" for x in have[-40:]))
-            prompt = prompt.replace(f"请再写 {args.per_task} 条",
-                                    f"请再写 {want} 条")
-        text, used = pool.chat([{"role": "user", "content": prompt}],
-                               purpose=args.purpose)
+        # max_tokens 要按"要几条"算。一条中文问法约 20~25 字，JSON 的引号
+        # 逗号还要占一些 —— 用途里那个固定的 512 在要 40 条时必然截断，
+        # 模型写到一半被切，数组闭不上，最后报成"返回里没有 JSON 数组"，
+        # 看不出是被截了。
+        budget = max(512, want * 48 + 320)
+        text, used, meta = pool.chat([{"role": "user", "content": prompt}],
+                                     purpose=args.purpose,
+                                     override={"max_tokens": budget},
+                                     return_meta=True)
         if not text:
             return [], {"模型没返回": 1}, used
-        m = re.search(r"\[.*\]", text, re.S)
-        if not m:
-            return [], {"返回里没有 JSON 数组": 1}, used
-        try:
-            cands = json.loads(m.group(0))
-        except Exception as e:
-            return [], {f"JSON 解析失败: {type(e).__name__}": 1}, used
+        cands, salvaged = parse_array(text)
+        if cands is None:
+            tail = text.strip()[-120:].replace("\n", " ")
+            why = ("输出被 max_tokens 截断" if meta.get("truncated")
+                   else "返回里没有 JSON 数组")
+            return [], {f"{why}（末尾：…{tail}）": 1}, used
+        if salvaged:
+            rejected_extra["从截断的输出里抢救"] = \
+                rejected_extra.get("从截断的输出里抢救", 0) + 1
         seen = set(T.QUESTIONS.get(task, [])) | set(have)
         kept, rejected = [], {}
         for q in cands:
@@ -220,22 +265,30 @@ def main() -> int:
                 continue
             seen.add(q.strip())
             kept.append(q.strip())
+        rejected.update(rejected_extra)
         return kept, rejected, used
 
     def gen_task(task: str) -> tuple:
         """一个任务跑到够数为止 —— 风格校验会拒掉一部分，
         一轮定生死的话拿到手常常不足量，还得靠人猜着重跑。"""
         have, rejected, used = [], {}, ""
+        # 一轮别要太多：要 60 条时模型后半段质量明显下滑，而且一次写太长
+        # 更容易撞上截断。分几轮要，每轮还能把已有的发回去避重。
+        ask = min(args.chunk, int(args.per_task * 1.6) + 2)
         for rnd in range(args.max_rounds):
             need = args.per_task - len(have)
             if need <= 0:
                 break
-            # 多要一些，抵消校验拒收
-            kept, rej, used = one_round(task, min(60, int(need * 1.6) + 2), have)
+            kept, rej, used = one_round(task, min(ask, int(need * 1.6) + 2), have)
             have.extend(kept)
             for k, v in rej.items():
                 rejected[k] = rejected.get(k, 0) + v
-            if not kept:            # 这一轮颗粒无收，再试也多半一样
+            if not kept:
+                # 颗粒无收。如果是被截断，下一轮少要点还有救；
+                # 其他原因（模型不返回、压根没写数组）再试也一样，直接停。
+                if any("截断" in k for k in rej):
+                    ask = max(5, ask // 2)
+                    continue
                 break
         return task, have[:args.per_task], rejected, used
 

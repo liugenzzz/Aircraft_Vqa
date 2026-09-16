@@ -330,8 +330,13 @@ class LLMPool:
         return c
 
     def chat(self, messages: list, purpose: str = "",
-             override: Optional[dict] = None) -> tuple:
+             override: Optional[dict] = None,
+             return_meta: bool = False) -> tuple:
         """返回 (文本, 用的模型名)；全部失败返回 (None, None)。
+
+        return_meta=True 时多返回一个 dict，带 finish_reason ——
+        输出被 max_tokens 截断时那里是 "length"。不看这个字段的话，
+        截断只能靠"解析失败"倒推，而解析失败的原因有好几种。
 
         每个模型内部重试 max_retries 次；仍失败且开了 failover 就换下一个。
         """
@@ -369,6 +374,13 @@ class LLMPool:
                             "确认服务端吃 chat_template_kwargs.enable_thinking=false，"
                             "或调大 max_tokens")
                     self.stats.record(spec.name, True, time.time() - t0)
+                    if return_meta:
+                        fr = getattr(resp.choices[0], "finish_reason", None)
+                        return text, spec.name, {
+                            "finish_reason": fr,
+                            "truncated": fr == "length",
+                            "had_reasoning": bool(reasoning.strip()
+                                                  or content != text)}
                     return text, spec.name
                 except Exception as e:
                     self.stats.record(spec.name, False, time.time() - t0,
@@ -377,7 +389,7 @@ class LLMPool:
                         time.sleep(backoff ** attempt)
             if not failover:
                 break
-        return None, None
+        return (None, None, {}) if return_meta else (None, None)
 
     # ---------------------------------------------------------- 体检
     def health(self, purpose: str = "") -> list:
