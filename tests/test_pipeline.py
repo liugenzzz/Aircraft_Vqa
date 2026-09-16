@@ -1403,3 +1403,34 @@ def test_no_python_syntax_errors_in_scripts():
         for fn in files:
             if fn.endswith(".py"):
                 py_compile.compile(os.path.join(dirpath, fn), doraise=True)
+
+
+def test_no_answer_template_lacks_a_placeholder():
+    """答案模板必须带占位符，否则几千条样本共用一句一字不差的话。
+
+    真实踩到的坑：5 条没有占位符的模板直接构成了 top5 答案 ——
+    "该区域未发现缺陷，外观正常。" 一句出现 2066 次。模型从这种数据里
+    学到的是复读，不是判读。
+    """
+    import re
+
+    from aircraft_vqa.vqa import templates as T
+    bad = []
+    for name in dir(T):
+        if not name.startswith("A_"):
+            continue
+        v = getattr(T, name)
+        if not isinstance(v, list):
+            continue
+        for t in v:
+            if isinstance(t, str) and not re.search(r"\{\w+\}", t):
+                bad.append(f"{name}: {t}")
+    assert not bad, "这些答案模板没有占位符，会整批重复：\n" + "\n".join(bad)
+
+
+def test_negative_answer_pools_are_wide_enough():
+    """无缺陷类回答占样本的大头，模板太少直接顶死 top20 占比。"""
+    from aircraft_vqa.vqa import templates as T
+    assert len(T.A_PAIR_COMPARE_NEG) >= 12, len(T.A_PAIR_COMPARE_NEG)
+    assert len(T.A_REGION_NEGATIVE) >= 8, len(T.A_REGION_NEGATIVE)
+    assert len(T.A_DISCRIMINATION_NEG) >= 10, len(T.A_DISCRIMINATION_NEG)
