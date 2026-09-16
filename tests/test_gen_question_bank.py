@@ -397,3 +397,50 @@ def test_prompt_states_the_forbidden_placeholders():
          "--dry-run", "--tasks", "object_recognition"],
         capture_output=True, text=True, cwd=REPO, timeout=60)
     assert "绝对不能" in r.stdout and "{obj}" in r.stdout, r.stdout[:400]
+
+
+def test_partial_run_merges_instead_of_clobbering(fake_pool, tmp_path):
+    """真实踩到的坑：--tasks 只跑两个任务，却把整份库覆盖成只剩这两个，
+    另外十四个任务几百条问法全没了。更糟的是脚本自己打印的"建议补跑"
+    提示就会触发它。"""
+    out = tmp_path / "bank.json"
+    _run(fake_pool, out, "--per-task", "6", "--tasks",
+         "description", "discrimination")
+    before = json.loads(out.read_text(encoding="utf-8"))["questions"]
+    assert set(before) == {"description", "discrimination"}
+
+    _run(fake_pool, out, "--per-task", "6", "--tasks", "counting")
+    after = json.loads(out.read_text(encoding="utf-8"))["questions"]
+    assert set(after) == {"description", "discrimination", "counting"}, after
+    assert after["description"] == before["description"], "没跑的任务被动了"
+
+
+def test_partial_run_backs_up_before_merging(fake_pool, tmp_path):
+    out = tmp_path / "bank.json"
+    _run(fake_pool, out, "--per-task", "6", "--tasks", "description")
+    _run(fake_pool, out, "--per-task", "6", "--tasks", "discrimination")
+    assert (tmp_path / "bank.json.bak").exists()
+
+
+def test_shrinking_a_task_is_flagged(fake_pool, tmp_path):
+    """重跑后条数变少多半是哪里出了问题，不能默默把库改瘦。"""
+    out = tmp_path / "bank.json"
+    _run(fake_pool, out, "--per-task", "9", "--tasks", "description")
+    log = _run(fake_pool, out, "--per-task", "3", "--max-rounds", "1",
+               "--tasks", "description")
+    assert "比原来少" in log, log
+
+
+def test_hint_command_includes_out_path(fake_pool, tmp_path):
+    """提示里的补跑命令必须带 --out，否则写到默认路径去了。"""
+    src = tmp_path / "b.json"
+    src.write_text(json.dumps({"questions": {"severity_action": ["请评估{defect}的严重程度。"]}},
+                              ensure_ascii=False), encoding="utf-8")
+    g = _g()
+    import io as _io
+    import contextlib
+    buf = _io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        g.filter_bank(str(src), str(tmp_path / "o.json"), "instruction")
+    out = buf.getvalue()
+    assert "--out" in out and "不会覆盖" in out, out

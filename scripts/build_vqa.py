@@ -191,11 +191,29 @@ def main() -> int:
     if bcfg.active_defect_types:
         print(f"[scope] 本期缺陷范围 {len(bcfg.active_defect_types)} 类："
               f"{'、'.join(tax.zh(t) for t in bcfg.active_defect_types)}")
-    n_bank = sum(len(v) for v in
-                 __import__("aircraft_vqa.vqa.templates", fromlist=["x"])
-                 .load_question_bank(bcfg.question_bank or "").values())
-    print(f"[qbank] 扩写问法 {n_bank} 条"
-          + ("" if n_bank else "（未生成，仅用种子问法；见 scripts/gen_question_bank.py）"))
+    _T = __import__("aircraft_vqa.vqa.templates", fromlist=["x"])
+    _bank = _T.load_question_bank(bcfg.question_bank or "")
+    n_bank = sum(len(v) for v in _bank.values())
+    if n_bank:
+        thin = [t for t, v in _bank.items() if len(v) < 10]
+        print(f"[qbank] 扩写问法 {n_bank} 条，覆盖 {len(_bank)} 个任务"
+              + (f"；其中 {len(thin)} 个任务不足 10 条：{thin}" if thin else ""))
+    else:
+        # "0 条"有好几种原因，混为一谈会让人往错的方向查。
+        # 真实踩到：补跑单个任务时整份覆盖了问法库，剩下两个空列表。
+        path = bcfg.question_bank or ""
+        if not path:
+            why = "configs/build.yaml 里没配 question_bank"
+        elif not os.path.exists(path):
+            why = f"{path} 不存在"
+        elif _bank:
+            why = (f"{path} 里 {len(_bank)} 个任务全是空列表 —— "
+                   "多半是只跑了部分任务把整份库覆盖了，看看有没有 "
+                   f"{path}.bak 可以还原")
+        else:
+            why = f"{path} 里没有 questions 字段或为空"
+        print(f"[qbank] 扩写问法 0 条，仅用种子问法 —— {why}")
+        print("        生成：python scripts/gen_question_bank.py --per-task 40")
     builder = VQABuilder(bcfg, tax)
 
     # 多图对比要一张同类正常件参考图。按 (数据源, 类别) 收集正常图，

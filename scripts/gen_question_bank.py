@@ -252,9 +252,9 @@ def filter_bank(path: str, out: str, style: str) -> int:
           f"（{dict(dropped_all)}）\n写入 {out}")
     thin = [t for t, v in kept_all.items() if len(v) < 20]
     if thin:
-        print(f"\n这些任务剩得偏少（<20），建议补跑："
-              f"\n  python scripts/gen_question_bank.py --per-task 40 --tasks "
-              + " ".join(thin))
+        print(f"\n这些任务剩得偏少（<20），建议补跑（会并回现有库，不会覆盖）："
+              f"\n  python scripts/gen_question_bank.py --per-task 40 "
+              f"--out {out} --tasks " + " ".join(thin))
     return 0
 
 
@@ -414,6 +414,35 @@ def main() -> int:
             flag = "" if len(kept) >= args.per_task else "  <- 没到目标"
             print(f"[{'ok' if kept else 'fail'}] {task:24s} 收 {len(kept):>3d} 条"
                   f"{flag}" + (f"  拒收 {rejected}" if rejected else ""))
+
+    # 只跑部分任务时，把结果**并回**已有的库，而不是整份覆盖。
+    # 之前是直接覆盖：补跑两个任务就把另外十四个任务的几百条问法全删了，
+    # 而且脚本自己打印的"建议补跑"提示就会触发它。
+    if os.path.exists(args.out):
+        try:
+            with open(args.out, encoding="utf-8") as f:
+                old_doc = json.load(f)
+            old_bank = old_doc.get("questions") or {}
+        except Exception as e:
+            print(f"[warn] 读不动已有的 {args.out}（{e}），本次将整份改写")
+            old_bank = {}
+        if old_bank:
+            merged = dict(old_bank)
+            for task, qs in bank.items():
+                merged[task] = qs
+            untouched = [t for t in old_bank if t not in bank]
+            if untouched:
+                print(f"[merge] 保留未跑的 {len(untouched)} 个任务共 "
+                      f"{sum(len(old_bank[t]) for t in untouched)} 条")
+            # 这次跑出来比原来还少，多半是哪里出了问题，别默默把库改瘦
+            for task, qs in bank.items():
+                was = len(old_bank.get(task, []))
+                if was and len(qs) < was:
+                    print(f"  ⚠ {task}: {was} -> {len(qs)} 条，比原来少。"
+                          "原文件已备份为 .bak，不对劲就还原")
+            import shutil
+            shutil.copy2(args.out, args.out + ".bak")
+            bank = merged
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as f:
