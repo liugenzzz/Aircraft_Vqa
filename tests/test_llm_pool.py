@@ -372,3 +372,37 @@ def test_big_model_stays_out_of_bulk_work():
         assert len(names) >= 2, (purpose, names)
         assert len(names) == len([m for m in p.models
                                   if "122b" not in m.name.lower()]), names
+
+
+def test_shipped_config_token_budgets_are_not_stingy():
+    """真实踩到的坑：max_tokens 写死 512，扩写 40 条问法必然截断，
+    16 个任务全军覆没，报的却是"模型没写 JSON 数组"。
+
+    模型是 128k 上下文，这里抠 token 省不下什么，却会把长输出腰斩，
+    而截断的表现是"解析失败"，很难一眼看出是配额不够。
+    """
+    path = os.path.join(REPO, "configs", "llm_pool.json")
+    p = LLMPool.from_file(path)
+    floor = {"rewrite": 1024, "paraphrase": 4096, "judge": 1024}
+    for purpose, least in floor.items():
+        got = p.gen_params(purpose, p.order(purpose)[0]).get("max_tokens", 0)
+        assert got >= least, f"{purpose} 的 max_tokens={got}，至少要 {least}"
+
+
+def test_judge_budget_accounts_for_thinking():
+    """122B 开着思考，思维链先吃配额。judge 给得太小，想完就没额度写结论，
+    直接变成 only_reasoning —— 把关模型静默失灵，还不报错。"""
+    path = os.path.join(REPO, "configs", "llm_pool.json")
+    p = LLMPool.from_file(path)
+    judge = p.order("judge")[0]
+    assert "122b" in judge.name.lower()
+    assert p.gen_params("judge", judge)["max_tokens"] >= 2048
+
+
+def test_comment_keys_never_reach_the_api():
+    """配置里用 _注 写说明很方便，但绝不能跟着请求发出去。"""
+    path = os.path.join(REPO, "configs", "llm_pool.json")
+    p = LLMPool.from_file(path)
+    for purpose in ("rewrite", "paraphrase", "judge"):
+        g = p.gen_params(purpose, p.order(purpose)[0])
+        assert not [k for k in g if k.startswith("_")], (purpose, g)

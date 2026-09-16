@@ -238,7 +238,7 @@ def main() -> int:
         # 逗号还要占一些 —— 用途里那个固定的 512 在要 40 条时必然截断，
         # 模型写到一半被切，数组闭不上，最后报成"返回里没有 JSON 数组"，
         # 看不出是被截了。
-        budget = max(512, want * 48 + 320)
+        budget = max(2048, want * 64 + 512)
         text, used, meta = pool.chat([{"role": "user", "content": prompt}],
                                      purpose=args.purpose,
                                      override={"max_tokens": budget},
