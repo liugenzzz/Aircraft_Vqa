@@ -417,8 +417,18 @@ class LLMPool:
                     row["detail"] = "只返回了思维链，没有正文"
                 out.append(row)
             except Exception as e:
-                out.append({"name": spec.name, "status": "fail",
-                            "detail": f"{type(e).__name__}: {e}"[:160]})
+                row = {"name": spec.name, "status": "fail",
+                       "detail": f"{type(e).__name__}: {e}"[:160]}
+                # 401/403 且压根没解析出 key —— 那不是"端点连不上"也不是
+                # "key 无效"，是根本没带凭据。分开报，别让人去查网络。
+                if not spec.resolved_key() and any(
+                        c in str(e) for c in ("401", "403", "Unauthorized",
+                                              "Forbidden")):
+                    row["status"] = "no_credential"
+                    row["detail"] = (
+                        f"没有解析到 key（api_key_env={spec.api_key_env} 未设置，"
+                        "本机也没有 .local.json），发出去的是空凭据")
+                out.append(row)
         return out
 
     def describe(self) -> str:
