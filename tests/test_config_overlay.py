@@ -108,6 +108,9 @@ def test_preflight_flags_sources_present_but_disabled(tmp_path, capsys):
     体检一路绿灯，ingest 少读一半数据，谁也不会发现。必须报出来。"""
     import importlib.util
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # 脚本靠 _bootstrap 找包。不自己加这一句就得指望别的测试文件先加过，
+    # 单独跑这个文件会挂 —— 顺序依赖的测试等于没测。
+    sys.path.insert(0, os.path.join(root, "scripts"))
     spec = importlib.util.spec_from_file_location(
         "preflight", os.path.join(root, "scripts", "preflight.py"))
     pf = importlib.util.module_from_spec(spec)

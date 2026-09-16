@@ -733,9 +733,10 @@ def test_loco_meta_labels_are_whitelisted_not_forced():
     但体检不该把它当成待修的映射缺口来报。
     """
     import importlib.util
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    sys.path.insert(0, os.path.join(root, "scripts"))   # 脚本靠 _bootstrap 找包
     spec = importlib.util.spec_from_file_location(
-        "preflight", os.path.join(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__))), "scripts", "preflight.py"))
+        "preflight", os.path.join(root, "scripts", "preflight.py"))
     pf = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(pf)
     assert "logical_anomalies" in pf.GENERIC_RAW

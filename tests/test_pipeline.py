@@ -1434,3 +1434,26 @@ def test_negative_answer_pools_are_wide_enough():
     assert len(T.A_PAIR_COMPARE_NEG) >= 12, len(T.A_PAIR_COMPARE_NEG)
     assert len(T.A_REGION_NEGATIVE) >= 8, len(T.A_REGION_NEGATIVE)
     assert len(T.A_DISCRIMINATION_NEG) >= 10, len(T.A_DISCRIMINATION_NEG)
+
+
+def test_every_test_file_runs_standalone():
+    """顺序依赖的测试等于没测 —— 它只是碰巧被别的文件先把 sys.path 铺好。
+
+    真实踩到两次：test_config_overlay 和 test_adapters_real_layout 里
+    加载 scripts/preflight.py 的那两条，单独跑都会 ModuleNotFoundError，
+    全量跑却是绿的。
+    """
+    import glob
+    import subprocess
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    me = os.path.basename(__file__)
+    bad = []
+    for f in sorted(glob.glob(os.path.join(root, "tests", "test_*.py"))):
+        if os.path.basename(f) == me:      # 别递归跑自己
+            continue
+        r = subprocess.run([sys.executable, "-m", "pytest", f, "-q",
+                            "--no-header", "-x", "--collect-only"],
+                           cwd=root, capture_output=True, text=True)
+        if r.returncode != 0:
+            bad.append(f"{os.path.basename(f)}: {r.stdout[-300:]}")
+    assert not bad, "这些文件单独收集就失败：\n" + "\n".join(bad)
