@@ -280,3 +280,74 @@ def test_salvage_keeps_what_was_written(capped_pool, tmp_path):
          "--max-rounds", "3", "--tasks", "description")
     got = json.loads(out.read_text(encoding="utf-8"))["questions"]["description"]
     assert got, "被截断就一条都不要了，太浪费"
+
+
+# ---------------------------------------------------------------- 可答性
+def _g():
+    import importlib.util
+    sys.path.insert(0, os.path.join(REPO, "scripts"))
+    spec = importlib.util.spec_from_file_location(
+        "gqb_ans", os.path.join(REPO, "scripts", "gen_question_bank.py"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+@pytest.mark.parametrize("q,expect_bad", [
+    ("请确定{defect}的紧急程度，并列出所需备件清单。", True),
+    ("请评估{defect}对疲劳寿命的影响，并给出监测建议。", True),
+    ("请判断该{ctx}是否具备放行条件。", True),
+    ("请依据AMM手册，说明{defect}的允许限值及修理方法。", True),
+    ("请核实该{obj}的电气连接是否松动。", True),
+    ("请判断图中{obj}属于哪个系统，并说明关注项。", True),
+    ("请分析{obj}该处裂纹的成因，并制定整改措施。", True),
+    ("请评估{defect}对气动外形的影响，并给出平滑处理建议。", True),
+    # 这些是答得上的，不能误伤
+    ("请评估{defect}的严重程度，并给出处置建议。", False),
+    ("请框出该{obj}上所有{defect}，输出JSON。", False),
+    ("请判断该{obj}是否存在目视可见的缺陷。", False),
+    ("请描述{defect}在图中的位置。", False),
+])
+def test_unanswerable_questions_are_rejected(q, expect_bad):
+    """答案里没有的内容不能问 —— 问"备件清单"而答案只有"打磨除锈"，
+    模型学到的是忽略指令后半段，或者干脆瞎编一份清单。
+
+    实测 LLM 扩写出来的 severity_action 有 58% 落在这里。
+    """
+    assert bool(_g().unanswerable(q)) is expect_bad, q
+
+
+def test_validate_reports_the_answerability_reason():
+    g = _g()
+    why = g.validate("severity_action",
+                     "请确定{defect}的紧急程度，并列出所需备件清单。",
+                     set(), "instruction")
+    assert "备件" in why, why
+
+
+def test_filter_only_cleans_an_existing_bank(tmp_path, capsys):
+    """校验规则加严之后要能清洗旧文件，不用重新花钱生成一遍。"""
+    g = _g()
+    src = tmp_path / "bank.json"
+    src.write_text(json.dumps({"version": 1, "questions": {"severity_action": [
+        "请评估{defect}的严重程度，并给出处置建议。",
+        "请确定{defect}的紧急程度，并列出所需备件清单。",
+        "请评估{defect}对疲劳寿命的影响，并给出监测建议。",
+    ]}}, ensure_ascii=False), encoding="utf-8")
+    out = tmp_path / "clean.json"
+    assert g.filter_bank(str(src), str(out), "instruction") == 0
+    doc = json.loads(out.read_text(encoding="utf-8"))
+    assert len(doc["questions"]["severity_action"]) == 1
+    assert doc["filter_dropped"]
+    assert "filtered_at" in doc
+    # 剩太少要提示补跑，不能悄悄交一份瘦了的库
+    assert "建议补跑" in capsys.readouterr().out
+
+
+def test_prompt_tells_the_model_what_it_may_ask():
+    """光靠事后校验是浪费调用，prompt 里就该说清楚。"""
+    src = open(os.path.join(REPO, "scripts", "gen_question_bank.py"),
+               encoding="utf-8").read()
+    assert "只能问我们答得上的东西" in src
+    for word in ("备件", "疲劳", "放行", "成因"):
+        assert word in src, word

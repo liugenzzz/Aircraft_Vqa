@@ -53,6 +53,13 @@ PROMPT = """你在为一个民航机务维修视觉检查助手准备训练数�
 
 请再写 {n} 条**不同表述**的指令，要求：
 
+【只能问我们答得上的东西 —— 违反直接作废】
+0. 可用的信息只有：缺陷类型、所在方位、范围大小、严重程度、处置方向、
+   被检部件名称。**不要**问备件清单、料号、疲劳寿命、剩余寿命、检查周期、
+   气动影响、缺陷成因、手册允许限值、是否放行/适航、公差、几何尺寸，
+   也不要问标注里不存在的对象（电气连接、密封条、焊缝、渗漏、烧蚀等）。
+   问了这些，答案给不出，等于教模型编。
+
 【风格 —— 最重要】
 1. 以**祈使句为主**（"请……""标出……""列出……""判断……"），
    这是指令微调模型最熟悉的形态；疑问句最多占三成，且必须是完整规范的问句。
@@ -102,6 +109,34 @@ def placeholders(text: str) -> set:
     return set(re.findall(r"\{([a-z_]+)\}", text))
 
 
+# 答案模板里从来不会出现的内容。问了就是逼模型编 —— 问"备件清单"而答案
+# 只有"打磨除锈"，模型学到的是忽略指令后半段，或者干脆瞎编一份清单。
+#
+# 实测：LLM 扩写出来的 severity_action 有 58% 落在这里，全库 10%。
+# 风格校验管的是"话说得对不对"，这里管的是"这话我们答不答得上"。
+UNANSWERABLE = {
+    "问了备件/工艺细节": r"备件|料号|件号清单|堆修|抛光修复方案|平滑处理",
+    "问了寿命与趋势": r"疲劳|剩余寿命|扩展趋势|扩展风险|监测建议|检查周期"
+                      r"|检查频次|监控频率|老化程度",
+    "问了放行/适航结论": r"放行|适航|签署|停飞|停机|投入运行|验收标准",
+    "问了手册限值": r"允许限值|允许极限|允许限度|手册章节|A\s*类损坏|公差",
+    "问了气动影响": r"气动",
+    "问了成因与整改": r"成因|整改措施|预防措施",
+    "问了标注里没有的对象": r"电气连接|透明件|雾化|密封条|标识标牌|积水|焊缝"
+                            r"|渗漏|过热|烧蚀|虚焊",
+    "问了系统归属/参数": r"哪个系统|归属系统|控制参数|飞行安全中的作用",
+    "问了量化测量": r"几何尺寸|深度等级|具体尺寸|长度与|面积与形态",
+}
+
+
+def unanswerable(q: str) -> str:
+    """这条问法是不是在要我们答案里根本没有的内容。"""
+    for why, pat in UNANSWERABLE.items():
+        if re.search(pat, q):
+            return why
+    return ""
+
+
 def validate(task: str, q: str, seen: set, style: str = "instruction") -> str:
     """返回拒收理由，空串表示通过。"""
     q = q.strip()
@@ -131,6 +166,9 @@ def validate(task: str, q: str, seen: set, style: str = "instruction") -> str:
         q.format(**DUMMY)
     except Exception as e:
         return f"无法格式化: {e}"
+    why = unanswerable(q)
+    if why:
+        return why
     return ""
 
 
@@ -163,6 +201,44 @@ def parse_array(text: str):
     return (out, True) if out else (None, False)
 
 
+def filter_bank(path: str, out: str, style: str) -> int:
+    """把已有问法库重新过一遍校验。校验规则加严后清洗旧文件用。"""
+    import collections
+    with open(path, encoding="utf-8") as f:
+        doc = json.load(f)
+    bank = doc.get("questions") or {}
+    kept_all, dropped_all = {}, collections.Counter()
+    print(f"{'任务':24s}{'原有':>5}{'保留':>5}{'剔除':>5}")
+    for task, qs in bank.items():
+        seen, kept, why_n = set(T.QUESTIONS.get(task, [])), [], collections.Counter()
+        for q in qs:
+            why = validate(task, q, seen, style)
+            if why:
+                why_n[why] += 1
+                dropped_all[why] += 1
+                continue
+            seen.add(q.strip())
+            kept.append(q.strip())
+        kept_all[task] = kept
+        flag = f"   {dict(why_n)}" if why_n else ""
+        print(f"{task:24s}{len(qs):>5}{len(kept):>5}{len(qs) - len(kept):>5}{flag}")
+    doc["questions"] = kept_all
+    doc["filtered_at"] = datetime.now(timezone.utc).isoformat()
+    doc["filter_dropped"] = dict(dropped_all)
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(doc, f, ensure_ascii=False, indent=1)
+    n_before = sum(len(v) for v in bank.values())
+    n_after = sum(len(v) for v in kept_all.values())
+    print(f"\n{n_before} -> {n_after} 条，剔除 {n_before - n_after} 条"
+          f"（{dict(dropped_all)}）\n写入 {out}")
+    thin = [t for t, v in kept_all.items() if len(v) < 20]
+    if thin:
+        print(f"\n这些任务剩得偏少（<20），建议补跑："
+              f"\n  python scripts/gen_question_bank.py --per-task 40 --tasks "
+              + " ".join(thin))
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="configs/question_bank.json")
@@ -184,9 +260,15 @@ def main() -> int:
                          "一轮常常不够数")
     ap.add_argument("--workers", type=int, default=0,
                     help="并发路数，默认取池里可用模型数")
+    ap.add_argument("--filter-only", metavar="BANK", default=None,
+                    help="不调大模型，只把已有问法库重新过一遍校验并写回。"
+                         "校验规则加严之后，用它清洗旧文件，不用重新生成")
     ap.add_argument("--dry-run", action="store_true",
                     help="只打印将要发出的 prompt，不调用大模型")
     args = ap.parse_args()
+
+    if args.filter_only:
+        return filter_bank(args.filter_only, args.out, args.style)
 
     tasks = args.tasks or list(T.QUESTIONS)
     prompts = {}
