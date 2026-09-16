@@ -19,6 +19,7 @@ import yaml
 
 from aircraft_vqa.balance import diversity as st_mod_diversity
 from aircraft_vqa.balance import (balance_samples, cap_class_imbalance,
+                                  cap_dataset_share,
                                   class_distribution, dedup, group_split,
                                   quota_sample, ratio_gap, stats)
 from aircraft_vqa.export import export_records
@@ -140,12 +141,39 @@ def main() -> int:
         print("没有可用样本，先跑 scripts/ingest.py")
         return 1
 
+    # ---- 数据源限流（在正负平衡之前）----
+    max_share = cfg.get("max_share_per_dataset", 0) or 0
+    ds_weights = cfg.get("dataset_weights") or None
+    if max_share or ds_weights:
+        samples, rep = cap_dataset_share(samples, max_share, ds_weights,
+                                         cfg.get("seed", 0))
+        tot = sum(r["after"] for r in rep.values()) or 1
+        print(f"[source] 限流后 {tot} 条"
+              + (f"（单源上限 {max_share:.0%}）" if max_share else ""))
+        for ds, r in sorted(rep.items(), key=lambda kv: -kv[1]["after"]):
+            mark = "  <- 限流" if r["after"] < r["before"] else (
+                "  <- 过采样" if r["after"] > r["before"] else "")
+            print(f"         {ds:24s} {r['before']:>6d} -> "
+                  f"{r['after']:>6d}  {r['after'] / tot:>6.1%}{mark}")
+
     # ---- 样本层平衡 ----
     before = Counter(s.label for s in samples)
     samples = balance_samples(samples, cfg.get("normal_per_anomalous", 1.0),
                               cfg.get("seed", 0))
     after = Counter(s.label for s in samples)
     print(f"[balance] {dict(before)} -> {dict(after)}")
+    # 限流可能把某一侧削掉太多，导致目标正负比根本达不到。
+    # "有无判定"的指标是在这个先验下测的，达不到必须说出来，不能默默跑过去。
+    want = cfg.get("normal_per_anomalous", 1.0)
+    n_a = after.get("anomalous", 0)
+    if want > 0 and n_a:
+        got = after.get("normal", 0) / n_a
+        if abs(got - want) > 0.1 * want:
+            print(f"  ⚠ 实际正/异 = {got:.2f}:1，没达到设定的 {want:.2f}:1"
+                  f"（正常图只剩 {after.get('normal', 0)} 张，不够配 {n_a} 张异常图）。"
+                  "\n    '有无判定'的指标是在这个先验下测的，换了先验就不可比。"
+                  "\n    要么调低 max_share_per_dataset 的力度，"
+                  "要么把 normal_per_anomalous 调成实际值。")
 
     # ---- 构建问答 ----
     bcfg = BuildConfig(

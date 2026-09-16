@@ -34,6 +34,107 @@ def balance_samples(samples: list, normal_per_anomalous: float = 1.0,
     return out
 
 
+def cap_dataset_share(samples: list, max_share: float = 0.0,
+                      weights: Optional[dict] = None, seed: int = 0) -> tuple:
+    """限制单个数据源占样本总量的比例，避免某一家把域先验带偏。
+
+    真实情形：Real-IAD 两万条占了全库 53%，而它拍的是灯箱里的端子排、
+    电路板。指标要的是**飞机**蒙皮上的缺陷识别，让一半训练数据是工业
+    小件，视觉先验会跟着跑偏。
+
+    下采样时按 normal/anomalous 分层，保持该源自身的正负比例不变 ——
+    整体下采样会把正负比也一起改掉，那是另一个旋钮该管的事。
+
+    weights 给每个源一个乘数（>1 过采样，<1 下采样），在限流之前生效，
+    用来把航空域的小样本源顶上来。
+
+    返回 (新样本列表, 每个源的 before/after 计数)。
+    """
+    rng = random.Random(seed)
+    by_ds = defaultdict(list)
+    for s in samples:
+        by_ds[s.dataset].append(s)
+
+    report = {k: {"before": len(v)} for k, v in by_ds.items()}
+
+    # 1) 显式权重：过采样用重复，下采样用抽取
+    if weights:
+        for ds, w in weights.items():
+            pool = by_ds.get(ds)
+            if not pool or w is None or w == 1:
+                continue
+            if w <= 0:
+                by_ds[ds] = []
+                continue
+            target = int(round(len(pool) * w))
+            if target <= len(pool):
+                picked = list(pool)
+                rng.shuffle(picked)
+                by_ds[ds] = picked[:target]
+            else:
+                extra = []
+                while len(pool) + len(extra) < target:
+                    extra.append(rng.choice(pool))
+                by_ds[ds] = pool + extra
+
+    # 2) 份额上限
+    #
+    # 用"注水"求一个统一的封顶值 L：每个源保留 min(自身条数, L)，
+    # 使最大的那个占比不超过 max_share。
+    #
+    # 不能一轮轮地"按当前总量算目标再砍" —— 被砍的源自己也在分母里，
+    # 砍完总量变小、份额又超标，于是越砍越少；只有两个源时一路收敛到 0。
+    # 而且砍了 A 会改变 B 的分母，逐个处理必然互相算错。
+    #
+    # L/sum(min(s_j, L)) 关于 L 单调不减，二分即可。
+    if max_share and 0 < max_share < 1:
+        sizes = {ds: len(v) for ds, v in by_ds.items() if v}
+        n = len(sizes)
+        if n:
+            # n 个源不可能人人都低于 1/n，低于这个值的上限无解，按均分处理
+            share = max(max_share, 1.0 / n)
+            if share > max_share + 1e-9:
+                report["_note"] = (
+                    f"max_share={max_share:.0%} 对 {n} 个源无解"
+                    f"（至少 1/{n}={1.0 / n:.0%}），已按 {share:.0%} 处理")
+
+            def ok(L: int) -> bool:
+                tot = sum(min(v, L) for v in sizes.values())
+                return tot > 0 and min(max(sizes.values()), L) <= tot * share
+
+            lo, hi = 1, max(sizes.values())
+            if ok(hi):
+                lo = hi                      # 本来就没人超限
+            else:
+                while lo < hi:               # 找满足条件的最大 L
+                    mid = (lo + hi + 1) // 2
+                    if ok(mid):
+                        lo = mid
+                    else:
+                        hi = mid - 1
+            for ds, pool in list(by_ds.items()):
+                if len(pool) <= lo:
+                    continue
+                anom = [x for x in pool if x.is_anomalous]
+                norm = [x for x in pool if not x.is_anomalous]
+                rng.shuffle(anom)
+                rng.shuffle(norm)
+                # 按原正负比例分层截断，别把正负比也一起改了
+                r = len(anom) / len(pool)
+                n_a = min(len(anom), int(round(lo * r)))
+                by_ds[ds] = anom[:n_a] + norm[:max(0, lo - n_a)]
+
+    out = []
+    for ds, v in by_ds.items():
+        report[ds]["after"] = len(v)
+        out.extend(v)
+    for k, r in report.items():
+        if isinstance(r, dict):          # "_note" 之类的说明项不是计数
+            r.setdefault("after", 0)
+    rng.shuffle(out)
+    return out, report
+
+
 def auto_total(by_task: dict, ratio: dict, quantile: float = 0.6) -> int:
     """不给 total 时，推一个"既不浪费又不太失衡"的总量。
 
