@@ -125,9 +125,15 @@ class PoolStats:
     total_latency: float = 0.0
     by_model: dict = field(default_factory=dict)
     errors: dict = field(default_factory=dict)
+    _lock: object = field(default_factory=threading.Lock, repr=False)
 
     def record(self, model: str, ok: bool, latency: float,
                err: str = "") -> None:
+        # 并发调用时 self.calls += 1 这种读-改-写会丢计数，统计就不准了
+        with self._lock:
+            self._record(model, ok, latency, err)
+
+    def _record(self, model: str, ok: bool, latency: float, err: str) -> None:
         self.calls += 1
         self.total_latency += latency
         m = self.by_model.setdefault(

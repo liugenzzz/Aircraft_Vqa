@@ -32,6 +32,7 @@ instruct 模型原本的 SFT 分布最近，对语言能力的扰动最小。
 from __future__ import annotations
 
 import argparse
+import concurrent.futures as cf
 import json
 import os
 import re
@@ -146,6 +147,11 @@ def main() -> int:
                     choices=["instruction", "loose"],
                     help="instruction=强制指令式并做风格校验（默认，"
                          "对模型语言层扰动最小）；loose=只校验占位符")
+    ap.add_argument("--max-rounds", type=int, default=3,
+                    help="每个任务最多问几轮 —— 风格校验会拒掉一部分，"
+                         "一轮常常不够数")
+    ap.add_argument("--workers", type=int, default=0,
+                    help="并发路数，默认取池里可用模型数")
     ap.add_argument("--dry-run", action="store_true",
                     help="只打印将要发出的 prompt，不调用大模型")
     args = ap.parse_args()
@@ -180,24 +186,30 @@ def main() -> int:
         return 1
     print(f"模型池：\n{pool.describe()}\n")
 
-    bank, stats = {}, {}
-    for task, prompt in prompts.items():
+    def one_round(task: str, want: int, have: list) -> tuple:
+        """要一轮，返回 (合格问法, 拒收原因计数, 用的模型)。
+
+        把已经收下的问法一并发过去当"别再写这些"，否则多轮之间会大量重复，
+        风格校验挡不住重复，只有 seen 能挡，白烧调用。
+        """
+        prompt = prompts[task]
+        if have:
+            prompt += ("\n\n【已经有了，不要重复，也不要只改动一两个字】\n"
+                       + "\n".join(f"- {x}" for x in have[-40:]))
+            prompt = prompt.replace(f"请再写 {args.per_task} 条",
+                                    f"请再写 {want} 条")
         text, used = pool.chat([{"role": "user", "content": prompt}],
                                purpose=args.purpose)
         if not text:
-            print(f"[fail] {task}: 池里所有模型都没返回")
-            continue
+            return [], {"模型没返回": 1}, used
         m = re.search(r"\[.*\]", text, re.S)
         if not m:
-            print(f"[fail] {task}: 返回里没有 JSON 数组")
-            continue
+            return [], {"返回里没有 JSON 数组": 1}, used
         try:
             cands = json.loads(m.group(0))
         except Exception as e:
-            print(f"[fail] {task}: JSON 解析失败 {e}")
-            continue
-
-        seen = set(T.QUESTIONS.get(task, []))
+            return [], {f"JSON 解析失败: {type(e).__name__}": 1}, used
+        seen = set(T.QUESTIONS.get(task, [])) | set(have)
         kept, rejected = [], {}
         for q in cands:
             if not isinstance(q, str):
@@ -208,10 +220,39 @@ def main() -> int:
                 continue
             seen.add(q.strip())
             kept.append(q.strip())
-        bank[task] = kept
-        stats[task] = {"kept": len(kept), "rejected": rejected}
-        print(f"[ok] {task}({used}): 收 {len(kept)}/{len(cands)} 条"
-              + (f"，拒收原因 {rejected}" if rejected else ""))
+        return kept, rejected, used
+
+    def gen_task(task: str) -> tuple:
+        """一个任务跑到够数为止 —— 风格校验会拒掉一部分，
+        一轮定生死的话拿到手常常不足量，还得靠人猜着重跑。"""
+        have, rejected, used = [], {}, ""
+        for rnd in range(args.max_rounds):
+            need = args.per_task - len(have)
+            if need <= 0:
+                break
+            # 多要一些，抵消校验拒收
+            kept, rej, used = one_round(task, min(60, int(need * 1.6) + 2), have)
+            have.extend(kept)
+            for k, v in rej.items():
+                rejected[k] = rejected.get(k, 0) + v
+            if not kept:            # 这一轮颗粒无收，再试也多半一样
+                break
+        return task, have[:args.per_task], rejected, used
+
+    bank, stats = {}, {}
+    n_workers = max(1, min(args.workers or len(pool.available(args.purpose)),
+                           len(prompts)))
+    print(f"并发 {n_workers} 路，每个任务最多 {args.max_rounds} 轮，"
+          f"目标每任务 {args.per_task} 条\n")
+    with cf.ThreadPoolExecutor(max_workers=n_workers) as ex:
+        futs = [ex.submit(gen_task, t) for t in prompts]
+        for fut in cf.as_completed(futs):
+            task, kept, rejected, used = fut.result()
+            bank[task] = kept
+            stats[task] = {"kept": len(kept), "rejected": rejected}
+            flag = "" if len(kept) >= args.per_task else "  <- 没到目标"
+            print(f"[{'ok' if kept else 'fail'}] {task:24s} 收 {len(kept):>3d} 条"
+                  f"{flag}" + (f"  拒收 {rejected}" if rejected else ""))
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as f:
