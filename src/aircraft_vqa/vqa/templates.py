@@ -560,6 +560,17 @@ QUESTIONS = {
     "pair_compare": Q_PAIR_COMPARE,
 }
 
+# 问法里**不许**出现的占位符 —— 出现了就等于把答案写在题面上。
+#
+# ALLOWED_PLACEHOLDERS 管的是"能不能 format 出来"，管不到这一层：
+# object_recognition 的答案就是"图中是{obj}，在飞机上对应{ctx}"，问法里
+# 一旦带上 {obj}，渲染出来就是"请指出电路板的名称"答"图中是电路板"——
+# 模型学到的是复读题面，不是看图。人写的 12 条种子问法一条都没带 {obj}，
+# 而大模型扩写的 34 条里有 32 条带了，正是这类需要显式禁止的地方。
+FORBIDDEN_PLACEHOLDERS = {
+    "object_recognition": {"obj", "ctx"},
+}
+
 ALLOWED_PLACEHOLDERS = {
     "grounding_single": {"defect", "defect_en", "obj", "ctx"},
     "grounding_all": {"obj", "ctx"},

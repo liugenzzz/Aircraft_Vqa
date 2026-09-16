@@ -53,6 +53,9 @@ PROMPT = """你在为一个民航机务维修视觉检查助手准备训练数�
 
 请再写 {n} 条**不同表述**的指令，要求：
 
+【禁止使用的占位符 —— 违反直接作废】
+{forbidden_note}
+
 【只能问我们答得上的东西 —— 违反直接作废】
 0. 可用的信息只有：缺陷类型、所在方位、范围大小、严重程度、处置方向、
    被检部件名称。**不要**问备件清单、料号、疲劳寿命、剩余寿命、检查周期、
@@ -129,11 +132,23 @@ UNANSWERABLE = {
 }
 
 
-def unanswerable(q: str) -> str:
+# 答案是纯文本的任务，问法不能要坐标/边界框 —— 答案里只有方位词和描述。
+# 注意 {box} 型问法里的"坐标"指的是**题面给的那个框**，不是要模型输出，
+# 不能一刀切。
+_WANTS_COORD = re.compile(r"坐标|bbox|边界框|检测框|JSON|json")
+_TEXT_FORMATS = {"text", "dialog"}
+
+
+def unanswerable(q: str, task: str = "") -> str:
     """这条问法是不是在要我们答案里根本没有的内容。"""
     for why, pat in UNANSWERABLE.items():
         if re.search(pat, q):
             return why
+    if task:
+        from aircraft_vqa.vqa import templates as _T
+        if (_T.OUTPUT_FORMAT.get(task) in _TEXT_FORMATS
+                and "{box}" not in q and _WANTS_COORD.search(q)):
+            return "文本答案却在要坐标/JSON"
     return ""
 
 
@@ -166,7 +181,11 @@ def validate(task: str, q: str, seen: set, style: str = "instruction") -> str:
         q.format(**DUMMY)
     except Exception as e:
         return f"无法格式化: {e}"
-    why = unanswerable(q)
+    leak = T.FORBIDDEN_PLACEHOLDERS.get(task, set()) & set(
+        re.findall(r"\{(\w+)\}", q))
+    if leak:
+        return f"问法泄底（含 {'、'.join('{%s}' % x for x in sorted(leak))}）"
+    why = unanswerable(q, task)
     if why:
         return why
     return ""
@@ -279,6 +298,13 @@ def main() -> int:
             seeds="\n".join(f"- {x}" for x in seeds),
             allowed="、".join(f"{{{p}}}" for p in sorted(
                 T.ALLOWED_PLACEHOLDERS.get(task, []))) or "（无）",
+            forbidden_note=(
+                "本任务的问法里**绝对不能**出现 "
+                + "、".join(f"{{{x}}}"
+                            for x in sorted(T.FORBIDDEN_PLACEHOLDERS[task]))
+                + "：答案本身就是要说出这个信息，问法里带上它就等于把答案"
+                  "抄在题面上，模型学到的是复读而不是看图。"
+                if task in T.FORBIDDEN_PLACEHOLDERS else "（本任务无此限制）"),
             required="、".join(f"{{{p}}}" for p in sorted(
                 T.REQUIRED_PLACEHOLDERS.get(task, []))) or "（无强制）")
 

@@ -351,3 +351,49 @@ def test_prompt_tells_the_model_what_it_may_ask():
     assert "只能问我们答得上的东西" in src
     for word in ("备件", "疲劳", "放行", "成因"):
         assert word in src, word
+
+
+def test_question_may_not_leak_the_answer():
+    """真实踩到的坑：object_recognition 的答案就是"图中是{obj}"，
+    而扩写出的 34 条里 32 条在问法里带了 {obj} ——
+    渲染出来是"请指出电路板的名称"答"图中是电路板"，
+    模型学到的是复读题面，不是看图。人写的 12 条种子一条都没带。
+    """
+    g = _g()
+    bad = "请指出{obj}的具体名称及其检查要点。"
+    why = g.validate("object_recognition", bad, set(), "instruction")
+    assert "泄底" in why, why
+    # {ctx} 同样泄底（"在飞机上对应{ctx}"也是答案的一部分）
+    assert "泄底" in g.validate("object_recognition",
+                                "请说明{ctx}的检查重点。", set(), "instruction")
+    # 不带就没问题
+    assert not g.validate("object_recognition",
+                          "请说明这张照片的拍摄对象及其检查重点。",
+                          set(), "instruction")
+
+
+def test_other_tasks_still_allow_obj():
+    """只有答案要说出该信息的任务才禁，别一刀切。"""
+    g = _g()
+    for task in ("discrimination", "grounding_all", "description"):
+        assert not g.validate(task, "请检查该{obj}并列出全部异常。",
+                              set(), "instruction"), task
+
+
+def test_seed_questions_obey_the_rule():
+    """人写的种子问法本身不能违规，否则规则形同虚设。"""
+    from aircraft_vqa.vqa import templates as T
+    for task, banned in T.FORBIDDEN_PLACEHOLDERS.items():
+        for q in T.QUESTIONS.get(task, []):
+            used = set(re.findall(r"\{(\w+)\}", q))
+            assert not (used & banned), f"{task} 的种子问法泄底：{q}"
+
+
+def test_prompt_states_the_forbidden_placeholders():
+    """事后拒收是白烧调用，prompt 里就该说明。"""
+    import subprocess
+    r = subprocess.run(
+        [sys.executable, os.path.join(REPO, "scripts", "gen_question_bank.py"),
+         "--dry-run", "--tasks", "object_recognition"],
+        capture_output=True, text=True, cwd=REPO, timeout=60)
+    assert "绝对不能" in r.stdout and "{obj}" in r.stdout, r.stdout[:400]
