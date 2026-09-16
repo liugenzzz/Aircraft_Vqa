@@ -13,3 +13,6 @@ data/
 
 # 本机状态，不入库（哪些数据源已下好 / 是否启用）
 configs/*.local.yaml
+
+# 模型池的本机 key / 端点差异，不入库（仓库是公开的）
+configs/*.local.json

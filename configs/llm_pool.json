@@ -1,98 +1,176 @@
 {
-  "version": 1,
-  "_说明": "模型池。改完直接重跑，不用动代码。字段说明见 docs/04_llm_pool.md",
-  "_密钥": "所有 key 走环境变量，不要写进这个文件（会进 git）。运行前 export LOCAL_LLM_KEY=...",
-
+  "_说明": [
+    "模型池配置。运行时 --config configs/llm_pool.json，可复制多份切换。",
+    "7 个 27B 副本做主力（扩写问法、改写答案），122B 做把关（judge）。",
+    "",
+    "!! 这个仓库是**公开**的，任何 key 都不写进这个文件。两种用法：",
+    "   1) 环境变量：export LOCAL_LLM_KEY=... ; export JUDGE_LLM_KEY=...",
+    "   2) 本机覆盖文件 configs/llm_pool.local.json（已 gitignore），",
+    "      只写要改的字段，按 name 覆盖，其余从这里继承：",
+    "         {\"models\": [{\"name\": \"qwen27b-31-8001\", \"api_key\": \"...\"}]}",
+    "",
+    "所有副本默认关思考（chat_template_kwargs.enable_thinking=false）；",
+    "服务端没吃这个参数时 <think> 块也会在客户端剥掉，双保险。"
+  ],
   "strategy": "round_robin",
-  "_strategy说明": "同一模型的多个副本用轮询做负载均衡最合适；若池里是不同档位的模型，改成 weighted 按权重混用",
-  "seed": 0,
-
-  "request": {
-    "timeout": 120,
-    "max_retries": 1,
-    "retry_backoff": 1.5,
-    "failover": true,
-    "_failover说明": "某个副本挂了自动换下一个，不让整批任务失败"
-  },
-
   "generation": {
-    "temperature": 0.6,
-    "top_p": 0.9,
+    "temperature": 0.7,
     "max_tokens": 1024
   },
-
+  "request": {
+    "timeout": 120,
+    "max_retries": 2,
+    "retry_backoff": 1.5,
+    "failover": true
+  },
   "models": [
     {
-      "name": "qwen27b-8001",
+      "name": "qwen122b-judge",
+      "enabled": true,
+      "weight": 1,
+      "model": "Qwen3.5-122B-A10B",
+      "base_url": "http://jb-aionlineinferenceservice-161249674027102080-8000-nhss-job.z2120.nhss.zhejianglab.com:31080/v1/chat/completions",
+      "api_key_env": "JUDGE_LLM_KEY",
+      "concurrency": 2,
+      "timeout": 180,
+      "tags": [
+        "judge"
+      ],
+      "notes": "排在最前：judge 用 failover 策略，按配置顺序取主选 —— 放在 7 个 27B 后面的话把关模型永远轮不上。外网域名，key 走环境变量 JUDGE_LLM_KEY，不进仓库。"
+    },
+    {
+      "name": "qwen27b-31-8001",
+      "enabled": true,
+      "weight": 1,
+      "model": "Qwen3.8-27B",
+      "base_url": "http://10.107.226.31:8001/v1/chat/completions",
+      "concurrency": 8,
+      "tags": [
+        "rewrite",
+        "paraphrase",
+        "judge"
+      ],
+      "api_key_env": "LOCAL_LLM_KEY"
+    },
+    {
+      "name": "qwen27b-31-8002",
+      "enabled": true,
+      "weight": 1,
+      "model": "Qwen3.8-27B",
+      "base_url": "http://10.107.226.31:8002/v1/chat/completions",
+      "concurrency": 8,
+      "tags": [
+        "rewrite",
+        "paraphrase",
+        "judge"
+      ],
+      "api_key_env": "LOCAL_LLM_KEY"
+    },
+    {
+      "name": "qwen27b-31-8003",
+      "enabled": true,
+      "weight": 1,
+      "model": "Qwen3.8-27B",
+      "base_url": "http://10.107.226.31:8003/v1/chat/completions",
+      "concurrency": 8,
+      "tags": [
+        "rewrite",
+        "paraphrase",
+        "judge"
+      ],
+      "api_key_env": "LOCAL_LLM_KEY"
+    },
+    {
+      "name": "qwen27b-31-8004",
+      "enabled": true,
+      "weight": 1,
+      "model": "Qwen3.8-27B",
+      "base_url": "http://10.107.226.31:8004/v1/chat/completions",
+      "concurrency": 8,
+      "tags": [
+        "rewrite",
+        "paraphrase",
+        "judge"
+      ],
+      "api_key_env": "LOCAL_LLM_KEY"
+    },
+    {
+      "name": "qwen27b-27-8001",
       "enabled": true,
       "weight": 1,
       "model": "Qwen3.8-27B",
       "base_url": "http://10.107.226.27:8001/v1/chat/completions",
-      "api_key_env": "LOCAL_LLM_KEY",
-      "tags": ["rewrite", "paraphrase", "judge"],
       "concurrency": 8,
-      "timeout": 120
+      "tags": [
+        "rewrite",
+        "paraphrase",
+        "judge"
+      ],
+      "api_key_env": "LOCAL_LLM_KEY"
     },
     {
-      "name": "qwen27b-8002",
+      "name": "qwen27b-27-8002",
       "enabled": true,
       "weight": 1,
       "model": "Qwen3.8-27B",
       "base_url": "http://10.107.226.27:8002/v1/chat/completions",
-      "api_key_env": "LOCAL_LLM_KEY",
-      "tags": ["rewrite", "paraphrase", "judge"],
       "concurrency": 8,
-      "timeout": 120
+      "tags": [
+        "rewrite",
+        "paraphrase",
+        "judge"
+      ],
+      "api_key_env": "LOCAL_LLM_KEY"
     },
     {
-      "name": "qwen27b-8003",
+      "name": "qwen27b-27-8003",
       "enabled": true,
       "weight": 1,
       "model": "Qwen3.8-27B",
       "base_url": "http://10.107.226.27:8003/v1/chat/completions",
-      "api_key_env": "LOCAL_LLM_KEY",
-      "tags": ["rewrite", "paraphrase", "judge"],
       "concurrency": 8,
-      "timeout": 120
-    },
-    {
-      "name": "qwen27b-8004",
-      "enabled": false,
-      "weight": 1,
-      "model": "Qwen3.8-27B",
-      "base_url": "http://10.107.226.27:8004/v1/chat/completions",
-      "api_key_env": "LOCAL_LLM_KEY",
-      "tags": ["rewrite", "paraphrase", "judge"],
-      "notes": "暂停中。要用把 enabled 改成 true 即可"
+      "tags": [
+        "rewrite",
+        "paraphrase",
+        "judge"
+      ],
+      "api_key_env": "LOCAL_LLM_KEY"
     }
   ],
-
-  "_其余可用副本": [
-    "10.107.230.59:8001-8004",
-    "10.200.100.103:8001-8004",
-    "10.107.238.7:8001-8004",
-    "10.107.234.47:8001-8004"
-  ],
-  "_扩容说明": "照着上面的条目复制一份、改 name 和 base_url 即可。全部 20 个副本都开的话，轮询会自动摊平负载",
-
   "purposes": {
     "rewrite": {
-      "models": ["*"],
       "strategy": "round_robin",
-      "generation": {"temperature": 0.55, "max_tokens": 512},
-      "_说明": "改写答案：要稳，温度低，事实不能漂"
+      "tags": [
+        "rewrite"
+      ],
+      "generation": {
+        "temperature": 0.55,
+        "max_tokens": 512
+      }
     },
     "paraphrase": {
-      "models": ["*"],
       "strategy": "round_robin",
-      "generation": {"temperature": 0.95, "top_p": 0.95, "max_tokens": 2048},
-      "_说明": "扩写问法：要多样，温度高"
+      "tags": [
+        "paraphrase"
+      ],
+      "generation": {
+        "temperature": 0.95,
+        "max_tokens": 512
+      }
     },
     "judge": {
-      "tags": ["judge"],
       "strategy": "failover",
-      "generation": {"temperature": 0.0, "max_tokens": 256},
-      "_说明": "一致性判定：温度 0 求确定性"
+      "tags": [
+        "judge"
+      ],
+      "generation": {
+        "temperature": 0.0,
+        "max_tokens": 256
+      }
     }
-  }
+  },
+  "_其余可用副本": [
+    "10.107.230.59 / 10.200.100.103 / 10.107.238.7 / 10.107.234.47 上还有若干同型副本，",
+    "需要更高吞吐时按上面的格式往 models 里加即可。"
+  ]
 }

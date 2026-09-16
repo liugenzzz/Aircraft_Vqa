@@ -176,11 +176,80 @@ def test_shipped_config_is_valid():
     assert p.models and p.purposes
     for purpose in ("rewrite", "paraphrase", "judge"):
         assert purpose in p.purposes
-    # 模板里不能留真实密钥
+    # 这个仓库是**公开**的：任何 key 都不许进入库文件，内网的也不行。
+    # 内网不可达只是说别人连不上那台机器，不等于可以把凭据和内网拓扑
+    # 发布到公网 —— 而且 git 历史抹不掉。key 走环境变量或
+    # configs/llm_pool.local.json（已 gitignore）。
+    # 注意看的是**入库文件本身**，不是 from_file 的结果 ——
+    # 后者会叠上本机的 .local.json，那里面有 key 是正常的。
+    import json as _json
+    for m in _json.load(open(path, encoding="utf-8"))["models"]:
+        assert "api_key" not in m, (
+            f"{m['name']} 把 key 写进了入库配置。仓库是公开的，"
+            "改用 api_key_env 或 configs/llm_pool.local.json")
     raw = open(path, encoding="utf-8").read()
-    assert "sk-" not in raw
-    for m in p.models:
-        assert m.api_key is None, "别把 key 写进配置文件，用 api_key_env"
+    for pat in ("sk-", "sk:", "local-pool-key"):
+        assert pat not in raw, f"入库配置里出现了 {pat}"
+
+
+def _host_of(url: str) -> str:
+    from urllib.parse import urlparse
+    return (urlparse(url).hostname or "").strip()
+
+
+def _is_private(host: str) -> bool:
+    """RFC1918 私网地址 / 回环。主机名一律当公网。"""
+    import ipaddress
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_private or ip.is_loopback
+
+
+def test_local_overlay_supplies_keys(tmp_path):
+    """本机 .local.json 叠在模板上补 key，模板本身保持干净。"""
+    import json
+    base = {"models": [{"name": "a", "model": "m",
+                        "base_url": "http://10.0.0.1:8001/v1",
+                        "api_key_env": "NOPE_NOT_SET"}],
+            "purposes": {}}
+    f = tmp_path / "pool.json"
+    f.write_text(json.dumps(base), encoding="utf-8")
+    (tmp_path / "pool.local.json").write_text(
+        json.dumps({"models": [{"name": "a", "api_key": "k123"}]}),
+        encoding="utf-8")
+    m = LLMPool.from_file(str(f)).models[0]
+    assert m.resolved_key() == "k123"
+    assert m.model == "m" and m.base_url.endswith("8001/v1"), "模板字段被覆盖丢了"
+
+
+def test_local_overlay_is_optional(tmp_path):
+    import json
+    f = tmp_path / "pool.json"
+    f.write_text(json.dumps({"models": [{"name": "a", "model": "m",
+                                         "base_url": "http://10.0.0.1:8001/v1"}],
+                             "purposes": {}}), encoding="utf-8")
+    assert LLMPool.from_file(str(f)).models[0].api_key is None
+
+
+def test_local_overlay_can_add_a_model(tmp_path):
+    import json
+    f = tmp_path / "pool.json"
+    f.write_text(json.dumps({"models": [{"name": "a", "model": "m",
+                                         "base_url": "http://10.0.0.1:8001/v1"}],
+                             "purposes": {}}), encoding="utf-8")
+    (tmp_path / "pool.local.json").write_text(
+        json.dumps({"models": [{"name": "b", "model": "m2",
+                                "base_url": "http://10.0.0.2:8001/v1",
+                                "api_key": "k"}]}), encoding="utf-8")
+    names = [m.name for m in LLMPool.from_file(str(f)).models]
+    assert names == ["a", "b"], names
+
+
+def test_local_overlay_file_is_gitignored():
+    ig = open(os.path.join(REPO, ".gitignore"), encoding="utf-8").read()
+    assert "configs/*.local.json" in ig
 
 
 @pytest.mark.parametrize("given,want", [
@@ -224,3 +293,78 @@ def test_build_set_overrides_nested_keys():
     assert cfg["export"]["format"] == "swift"
     with pytest.raises(SystemExit):
         bv.apply_overrides({}, ["没有等号"])
+
+
+# ------------------------------------------------------------------ 思维链
+@pytest.mark.parametrize("raw,want", [
+    ("<think>盘算一下</think>最终答案", "最终答案"),
+    ("琢磨半天</think>最终答案", "最终答案"),          # 开标签被 chat template 吃掉
+    ("<THINK>x</THINK> 答案", "答案"),                # 大小写
+    ("< think >x</ think >答案", "答案"),              # 带空格
+    ("答案在前<think>被截断了没闭合", "答案在前"),      # max_tokens 截断
+    ("<reasoning>a</reasoning>b", "b"),
+    ("<think>a</think>中间<think>b</think>尾", "中间尾"),
+    ("干净的答案", "干净的答案"),
+    ("", ""),
+])
+def test_strip_reasoning(raw, want):
+    """思维链必须剥干净 —— 漏一个就是把模型的内心戏写进训练答案。"""
+    from aircraft_vqa.llm.pool import strip_reasoning
+    assert strip_reasoning(raw) == want
+
+
+def test_thinking_disabled_by_default():
+    from aircraft_vqa.llm.pool import ModelSpec
+    assert ModelSpec(name="a", model="m").template_kwargs() == {
+        "enable_thinking": False}
+
+
+def test_thinking_can_be_kept_explicitly():
+    from aircraft_vqa.llm.pool import ModelSpec
+    m = ModelSpec(name="a", model="m", disable_thinking=False)
+    assert m.template_kwargs() == {}
+
+
+def test_explicit_template_kwargs_win():
+    from aircraft_vqa.llm.pool import ModelSpec
+    m = ModelSpec(name="a", model="m",
+                  chat_template_kwargs={"enable_thinking": True, "x": 1})
+    assert m.template_kwargs() == {"enable_thinking": True, "x": 1}
+
+
+def test_reasoning_content_is_read_from_model_extra():
+    """reasoning_content 不是 OpenAI 官方字段，SDK 会把它丢进 model_extra。"""
+    from aircraft_vqa.llm.pool import _msg_text
+
+    class Msg:
+        content = ""
+        model_extra = {"reasoning_content": "内心戏"}
+    assert _msg_text(Msg()) == ("", "内心戏")
+    assert _msg_text({"content": "答案", "reasoning_content": "戏"}) == ("答案", "戏")
+
+
+def test_shipped_config_disables_thinking_everywhere():
+    path = os.path.join(REPO, "configs", "llm_pool.json")
+    for m in LLMPool.from_file(path).models:
+        assert m.template_kwargs().get("enable_thinking") is False, m.name
+
+
+def test_judge_prefers_the_big_model():
+    """judge 用 failover，按配置顺序取主选 —— 把关模型必须排第一，
+    否则 7 个 27B 会把它挤到永远轮不上。"""
+    path = os.path.join(REPO, "configs", "llm_pool.json")
+    p = LLMPool.from_file(path)
+    seq = p.order("judge")
+    assert seq, "judge 没有可用模型"
+    assert "122b" in seq[0].name.lower(), [m.name for m in seq[:3]]
+    assert len(seq) > 1, "把关模型挂了要有备选"
+
+
+def test_big_model_stays_out_of_bulk_work():
+    """122B 不该被拉去干扩写/改写这种量大的活。"""
+    path = os.path.join(REPO, "configs", "llm_pool.json")
+    p = LLMPool.from_file(path)
+    for purpose in ("rewrite", "paraphrase"):
+        names = [m.name.lower() for m in p.order(purpose)]
+        assert not any("122b" in n for n in names), (purpose, names)
+        assert len(names) == 7, (purpose, len(names))

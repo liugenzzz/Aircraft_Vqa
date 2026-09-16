@@ -13,11 +13,64 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import random
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Optional
+
+
+# ---------------------------------------------------------------- 思维链
+# Qwen3 / DeepSeek-R1 这类模型默认会输出思维链。服务端开了 reasoning parser
+# 时它落在 message.reasoning_content，content 是干净的；没开 parser 时
+# <think>...</think> 会原样留在 content 里，必须剥掉再用 —— 否则思维链会被
+# 当成答案写进训练数据。
+_R_TAG = r"think|thinking|reasoning|reason"
+_R_BLOCK = re.compile(rf"<\s*({_R_TAG})\s*>.*?<\s*/\s*\1\s*>", re.I | re.S)
+_R_CLOSE = re.compile(rf"^.*<\s*/\s*(?:{_R_TAG})\s*>", re.I | re.S)
+_R_OPEN = re.compile(rf"<\s*(?:{_R_TAG})\s*>", re.I)
+
+# 默认关思考。provider 可以覆盖具体字段，或整体 disable_thinking: false 保留。
+DEFAULT_CHAT_TEMPLATE_KWARGS = {"enable_thinking": False}
+
+
+def strip_reasoning(text: str) -> str:
+    """剥掉思维链，只留最终回答。三种形态都要管：
+
+    1. 成对 <think>...</think>  -> 整块删掉
+    2. 只有闭合标签（开标签被 chat template 吃掉，思维链以前缀形式返回）
+       -> 丢掉最后一个 </think> 之前的全部内容
+    3. 只有开标签（输出被 max_tokens 截断）-> 其后全是思维链，没有可用回答
+    """
+    if not text:
+        return ""
+    cleaned = _R_BLOCK.sub("", text)
+    if _R_CLOSE.search(cleaned):
+        cleaned = _R_CLOSE.sub("", cleaned, count=1)
+    m = _R_OPEN.search(cleaned)
+    if m:
+        cleaned = cleaned[:m.start()]
+    return cleaned.strip()
+
+
+def _msg_text(message) -> tuple:
+    """从 SDK 的 message 对象里取 (content, reasoning_content)。
+
+    reasoning_content 不是 OpenAI 官方字段，SDK 会把它丢进 model_extra；
+    不同服务端叫法也不一样，几个常见的都试一遍。
+    """
+    get = (message.get if isinstance(message, dict)
+           else lambda k, d=None: getattr(message, k, d))
+    content = get("content", "") or ""
+    reasoning = ""
+    extra = get("model_extra", None) or {}
+    for k in ("reasoning_content", "reasoning", "thinking"):
+        v = get(k, None) or (extra.get(k) if isinstance(extra, dict) else None)
+        if isinstance(v, str) and v.strip():
+            reasoning = v
+            break
+    return str(content), str(reasoning)
 
 
 @dataclass
@@ -33,7 +86,17 @@ class ModelSpec:
     concurrency: int = 4
     timeout: int = 60
     generation: dict = field(default_factory=dict)
+    # 关思考。vLLM 走 extra_body.chat_template_kwargs 传给 chat template。
+    disable_thinking: bool = True
+    chat_template_kwargs: dict = field(default_factory=dict)
     notes: str = ""
+
+    def template_kwargs(self) -> dict:
+        if not self.disable_thinking:
+            return dict(self.chat_template_kwargs)
+        merged = dict(DEFAULT_CHAT_TEMPLATE_KWARGS)
+        merged.update(self.chat_template_kwargs or {})   # 显式配置优先
+        return merged
 
     def resolved_key(self) -> str:
         return self.api_key or os.environ.get(self.api_key_env, "")
@@ -123,6 +186,7 @@ class LLMPool:
         self.models = [ModelSpec(**{k: v for k, v in m.items() if k in known})
                        for m in (self.cfg.get("models") or [])]
         self.stats = PoolStats()
+        self._warned_key = set()
         self._clients: dict = {}
         self._rr = 0
         self._lock = threading.Lock()
@@ -130,9 +194,48 @@ class LLMPool:
 
     # ---------------------------------------------------------- 加载
     @classmethod
+    @staticmethod
+    def _merge_local(cfg: dict, path: str) -> dict:
+        """叠加 configs/xxx.local.json —— 本机的 key 和端点差异写那儿，不入库。
+
+        仓库是公开的，凭据一旦提交就抹不掉；和 datasets.local.yaml 一个路子。
+        models 按 name 浅合并，只写要改的字段，其余从模板继承。
+        """
+        import json as _json
+        base = path[:-5] if path.endswith(".json") else path
+        lp = base + ".local.json"
+        if not os.path.exists(lp):
+            return cfg
+        with open(lp, encoding="utf-8") as f:
+            loc = _json.load(f) or {}
+        out = dict(cfg)
+        by_name = {m.get("name"): dict(m) for m in out.get("models", [])}
+        order = [m.get("name") for m in out.get("models", [])]
+        for m in loc.pop("models", []) or []:
+            n = m.get("name")
+            if not n:
+                continue
+            if n in by_name:
+                by_name[n].update(m)
+            else:
+                by_name[n] = dict(m)
+                order.append(n)
+        for k, v in loc.items():
+            if k == "purposes" and isinstance(v, dict):
+                merged = dict(out.get("purposes") or {})
+                merged.update(v)
+                out[k] = merged
+            else:
+                out[k] = v
+        out["models"] = [by_name[n] for n in order]
+        print(f"[pool] 已叠加本机配置 {lp}")
+        return out
+
+    @classmethod
     def from_file(cls, path: str) -> "LLMPool":
         with open(path, encoding="utf-8") as f:
-            return cls(json.load(f))
+            cfg = json.load(f)
+        return cls(cls._merge_local(cfg, path))
 
     @classmethod
     def from_file_or_none(cls, path: Optional[str]) -> Optional["LLMPool"]:
@@ -152,7 +255,19 @@ class LLMPool:
         tags = spec.get("tags")
         if tags:
             pool = [m for m in pool if set(tags) & set(m.tags)]
-        return [m for m in pool if m.resolved_key() or m.base_url]
+        usable = []
+        for m in pool:
+            if m.resolved_key() or m.base_url:
+                # 配了 api_key_env 却没设环境变量 —— 请求会失败然后静默转移到
+                # 备选，把关模型就这么被降级掉了，必须说一声。
+                if m.api_key is None and not os.environ.get(m.api_key_env):
+                    if m.name not in self._warned_key:
+                        self._warned_key.add(m.name)
+                        print(f"[pool] {m.name} 需要环境变量 {m.api_key_env}，"
+                              "当前没设 —— 调用会失败并转移到备选模型"
+                              f"（purpose={purpose or '默认'} 会因此降级）")
+                usable.append(m)
+        return usable
 
     def _strategy(self, purpose: str) -> str:
         s = (self.purposes.get(purpose) or {}).get(
@@ -226,11 +341,27 @@ class LLMPool:
             for attempt in range(retries + 1):
                 t0 = time.time()
                 try:
+                    kw = dict(params)
+                    tkw = spec.template_kwargs()
+                    if tkw:
+                        # vLLM/SGLang 认的是 extra_body.chat_template_kwargs；
+                        # 调用方自己传了就别覆盖他。
+                        eb = dict(kw.pop("extra_body", None) or {})
+                        eb.setdefault("chat_template_kwargs", tkw)
+                        kw["extra_body"] = eb
                     resp = self._client(spec).chat.completions.create(
                         model=spec.model, messages=messages,
                         timeout=spec.timeout or self.request.get("timeout", 60),
-                        **params)
-                    text = resp.choices[0].message.content
+                        **kw)
+                    content, reasoning = _msg_text(resp.choices[0].message)
+                    text = strip_reasoning(content)
+                    if not text and reasoning.strip():
+                        # 回答整个落在思维链里 —— 多半是没关成思考又被 max_tokens
+                        # 截断。当成失败让它重试/转移，别把空串写进数据。
+                        raise RuntimeError(
+                            f"{spec.name} 只返回了思维链没有正文，"
+                            "确认服务端吃 chat_template_kwargs.enable_thinking=false，"
+                            "或调大 max_tokens")
                     self.stats.record(spec.name, True, time.time() - t0)
                     return text, spec.name
                 except Exception as e:
