@@ -473,8 +473,12 @@ def test_cap_class_imbalance_flattens_tail():
               "qa_id": f"g{i}"} for i in range(100)])
     out = cap_class_imbalance(recs, ["classification_open"], max_over_min=3.0)
     dist = class_distribution(out, ["classification_open"])
-    assert dist["dent"] == 10
-    assert dist["corrosion"] == 30                      # 3 × 最少类
+    # 基准是中位数不是最少类：两个类时中位数=100，头部 cap=300（不超限，
+    # corrosion 原样留下），长尾 floor=100，dent 重复采样顶到 3×=30。
+    # 按最少类算的话会把 corrosion 砍到 30，白扔 70 条标注好的数据。
+    assert dist["corrosion"] == 100, dist
+    assert dist["dent"] == 30, dist
+    assert max(dist.values()) / min(dist.values()) < 10 / 1, "失衡没改善"
     # 其他任务不受影响
     assert sum(r["task"] == "grounding_all" for r in out) == 100
 

@@ -131,3 +131,76 @@ def test_shipped_config_caps_the_dominant_source():
     after = sum(1 for s in out if s.dataset in air) / len(out)
     assert before < 0.32, before
     assert after > 0.45, (before, after)
+
+
+# ---------------------------------------------------------------- 类别长尾
+def _cls_recs(counts):
+    return [{"task": "classification_open", "target_type": k,
+             "qa_id": f"{k}/{i}", "question": "q", "answer": "a"}
+            for k, n in counts.items() for i in range(n)]
+
+
+# 真实跑出来的分布
+REAL = {"dent": 1757, "crack": 1662, "corrosion": 627, "scratch": 513,
+        "fastener_missing": 357, "thread_damage": 340,
+        "fastener_loose": 123, "paint_peeling": 91}
+
+
+def test_rare_class_does_not_drag_everything_down():
+    """真实踩到的坑：按**最少类**算封顶，paint_peeling 只有 91 条，
+    cap=273，于是 dent/crack 各被砍掉 1400+，类型题整体丢 66%，
+    而且扔掉的恰恰是标注最好的那些。"""
+    from aircraft_vqa.balance import cap_class_imbalance
+    out = cap_class_imbalance(_cls_recs(REAL), {"classification_open"}, 3.0)
+    real_kept = sum(1 for r in out if not r.get("oversampled"))
+    assert real_kept / sum(REAL.values()) > 0.9, real_kept
+
+
+def test_imbalance_is_actually_reduced():
+    from aircraft_vqa.balance import cap_class_imbalance
+    out = cap_class_imbalance(_cls_recs(REAL), {"classification_open"}, 3.0)
+    c = Counter(r["target_type"] for r in out)
+    before = max(REAL.values()) / min(REAL.values())
+    after = max(c.values()) / min(c.values())
+    assert after < before / 3, (before, after)
+
+
+def test_tail_is_oversampled_not_head_slashed():
+    from aircraft_vqa.balance import cap_class_imbalance
+    out = cap_class_imbalance(_cls_recs(REAL), {"classification_open"}, 3.0)
+    c = Counter(r["target_type"] for r in out)
+    assert c["paint_peeling"] > REAL["paint_peeling"], "长尾没顶上来"
+    assert c["fastener_loose"] > REAL["fastener_loose"]
+
+
+def test_oversample_factor_is_capped():
+    """重复同一条问答会助长记忆，倍数必须封顶。"""
+    from aircraft_vqa.balance import cap_class_imbalance
+    counts = {"big": 3000, "mid": 1000, "tiny": 10}
+    out = cap_class_imbalance(_cls_recs(counts), {"classification_open"},
+                              3.0, max_oversample=2.0)
+    c = Counter(r["target_type"] for r in out)
+    assert c["tiny"] <= 10 * 2, c["tiny"]
+
+
+def test_oversampled_rows_get_distinct_ids():
+    """复制出来的行必须有各自的 qa_id，否则会被 dedup 当成同一条抹掉。"""
+    from aircraft_vqa.balance import cap_class_imbalance, dedup
+    out = cap_class_imbalance(_cls_recs(REAL), {"classification_open"}, 3.0)
+    os_rows = [r for r in out if r.get("oversampled")]
+    assert os_rows
+    assert len({r["qa_id"] for r in out}) == len(out), "qa_id 撞了"
+
+
+def test_other_tasks_untouched():
+    from aircraft_vqa.balance import cap_class_imbalance
+    recs = _cls_recs(REAL) + [{"task": "grounding_single", "qa_id": f"g/{i}"}
+                              for i in range(500)]
+    out = cap_class_imbalance(recs, {"classification_open"}, 3.0)
+    assert sum(1 for r in out if r["task"] == "grounding_single") == 500
+
+
+def test_disabled_when_ratio_not_positive():
+    from aircraft_vqa.balance import cap_class_imbalance
+    recs = _cls_recs(REAL)
+    assert len(cap_class_imbalance(recs, set(), 3.0)) == len(recs)

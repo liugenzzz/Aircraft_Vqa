@@ -220,12 +220,15 @@ def ratio_gap(records: list, task_ratio: dict) -> list:
 
 
 def cap_class_imbalance(records: list, tasks, max_over_min: float = 3.0,
-                        key: str = "target_type", seed: int = 0) -> list:
+                        key: str = "target_type", seed: int = 0,
+                        max_oversample: float = 3.0) -> list:
     """压平"类型识别"类任务的类别长尾。
 
     `异常类别识别准确率` 这类指标通常按**宏平均**算（每类等权），
     类别样本量差 4~5 倍时，样本最少的那几类学不动，宏平均会被直接拖死。
-    这里把最多的类下采样到 max_over_min × 最少类，其他任务不受影响。
+    做法是双向收拢：头部类下采样到 max_over_min × 中位数，长尾类重复采样
+    顶到 中位数 / max_over_min（复制倍数不超过 max_oversample，
+    重复同一条问答会助长记忆而不是泛化）。其他任务不受影响。
     """
     rng = random.Random(seed)
     tasks = set(tasks)
@@ -238,14 +241,36 @@ def cap_class_imbalance(records: list, tasks, max_over_min: float = 3.0,
     by_cls = defaultdict(list)
     for r in target:
         by_cls[r[key]].append(r)
-    n_min = min(len(v) for v in by_cls.values())
-    cap = max(1, int(n_min * max_over_min))
+    counts = sorted(len(v) for v in by_cls.values())
+
+    # 基准取**中位数**而不是最少类。
+    #
+    # 按最少类算是致命的：真实数据里 paint_peeling 只有 91 条，
+    # cap = 91x3 = 273，于是 dent(1757) 和 crack(1662) 被砍到 273，
+    # 整个类型识别任务 5470 -> 1852，白扔 66%。一个长尾类就能把所有类
+    # 一起拖下水，而且扔掉的恰恰是标注最好的那些。
+    #
+    # 中位数为基准：长尾类保持原样（本来就不多，不会撑爆宏平均），
+    # 头部类压到一个合理量级，比例仍然受控，但不会被最稀有的那类绑架。
+    mid = counts[len(counts) // 2]
+    cap = max(1, int(mid * max_over_min))
+    floor = max(1, int(cap / max_over_min))
 
     kept = []
     for cls, rows in by_cls.items():
         if len(rows) > cap:
             rng.shuffle(rows)
             rows = rows[:cap]
+        elif len(rows) < floor and max_oversample > 1:
+            # 长尾类**顶上来**，而不是把头部砍下去。
+            # 但重复同一条问答会助长记忆而不是泛化，所以复制倍数封顶。
+            want = min(floor, int(len(rows) * max_oversample))
+            extra = [dict(rows[rng.randrange(len(rows))]) for _ in
+                     range(max(0, want - len(rows)))]
+            for i, e in enumerate(extra):
+                e["qa_id"] = f"{e.get('qa_id', '')}#os{i}"   # 去重时别被当成同一条
+                e["oversampled"] = True
+            rows = rows + extra
         kept.extend(rows)
     rng.shuffle(kept)
     return other + kept

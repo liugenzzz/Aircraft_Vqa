@@ -225,15 +225,30 @@ def main() -> int:
     cls_tasks = cfg.get("class_balance_tasks",
                         ["classification_open", "classification_mc"])
     mom = float(cfg.get("class_max_over_min", 3.0))
+    TYPE_TASKS = list(cls_tasks)
+    cls_before = cls_after = cls_dropped = 0
     if mom > 0:
         before = class_distribution(records, cls_tasks)
-        records = cap_class_imbalance(records, cls_tasks, mom,
-                                      seed=cfg.get("seed", 0))
+        records = cap_class_imbalance(
+            records, cls_tasks, mom, seed=cfg.get("seed", 0),
+            max_oversample=float(cfg.get("class_max_oversample", 3.0)))
         after = class_distribution(records, cls_tasks)
+        cls_before = sum(before.values())
+        cls_after = sum(after.values())
+        n_os = sum(1 for r in records if r.get("oversampled"))
+        cls_dropped = max(0, cls_before - (cls_after - n_os))
         if before != after:
-            print(f"[class] 类型识别任务类别均衡（最多 ≤ {mom}× 最少）")
+            print(f"[class] 类型识别任务类别均衡"
+                  f"（头部 ≤ {mom}× 中位数，长尾重复采样顶到 中位数/{mom}）")
             print(f"        前 {before}")
             print(f"        后 {after}")
+            ratio_b = (max(before.values()) / min(before.values())
+                       if before and min(before.values()) else 0)
+            ratio_a = (max(after.values()) / min(after.values())
+                       if after and min(after.values()) else 0)
+            print(f"        最多/最少 {ratio_b:.1f}× -> {ratio_a:.1f}×；"
+                  f"真实数据保留 {1 - cls_dropped / max(1, cls_before):.0%}，"
+                  f"重复采样 {n_os} 条")
 
     # ---- 质检 ----
     records, report = run_qc(records, check_image=args.check_images)
@@ -257,13 +272,21 @@ def main() -> int:
     gaps = ratio_gap(records, tratio)
     short = [g for g in gaps if g["attain"] < 0.6]
     if short:
-        print("[ratio] 以下任务未达目标配比 —— 通常是源数据缺少对应标注，"
-              "不是构建器的问题：")
+        # 别一律甩给源数据：类别均衡那一步自己也会砍掉大量类型题，
+        # 分不清是"源数据没有"还是"我们自己扔了"，就会去补错地方。
+        by_cap = {g["task"] for g in short} & set(TYPE_TASKS)
+        print("[ratio] 以下任务未达目标配比：")
         for g in short:
+            why = "  <- 类别均衡砍掉的" if (g["task"] in by_cap and cls_dropped) else ""
             print(f"         {g['task']:22s} 实际 {g['actual']:.1%} / "
-                  f"目标 {g['target']:.1%}（达成 {g['attain']:.0%}，{g['n']} 条）")
-        print("         补法见 docs/01_dataset_survey.md：类型/严重度类问题需要"
-              "带细粒度缺陷类别的源（MVTec AD screw、Roboflow aircraft_skin_defects 等）。")
+                  f"目标 {g['target']:.1%}（达成 {g['attain']:.0%}，{g['n']} 条）{why}")
+        if by_cap and cls_dropped:
+            print(f"         类别均衡这一步把类型题从 {cls_before} 条压到 "
+                  f"{cls_after} 条（丢 {cls_dropped / cls_before:.0%}）——"
+                  "先看是不是 class_max_over_min 收得太紧，再去补数据。")
+        print("         源数据侧的补法见 docs/01_dataset_survey.md：类型/严重度类"
+              "问题需要带细粒度缺陷类别的源"
+              "（MVTec AD screw、Roboflow aircraft_skin_defects 等）。")
 
     # ---- 可选：大模型改写 ----
     if args.llm_rewrite:
