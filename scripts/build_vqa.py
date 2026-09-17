@@ -105,6 +105,8 @@ def main() -> int:
     ap.add_argument("--check-images", action="store_true",
                     help="质检时逐条确认图片存在（慢但稳）")
     ap.add_argument("--llm-rewrite", action="store_true", help="启用大模型改写层")
+    ap.add_argument("--llm-workers", type=int, default=0,
+                    help="改写并发路数，默认按池里各模型的 concurrency 之和")
     ap.add_argument("--mix-general", default=None,
                     help="通用指令数据 jsonl（已是导出格式），按比例混进 train，"
                          "防止窄领域微调把模型的语言层带偏")
@@ -316,13 +318,15 @@ def main() -> int:
     if args.llm_rewrite:
         rw = load_rewriter(cfg.get("llm", {}))
         if rw.enabled:
-            n_ok = 0
-            for i, r in enumerate(records):
-                rw.rewrite(r)
-                n_ok += int(bool(r.get("rewritten")))
-                if (i + 1) % 200 == 0:
-                    print(f"  ...改写 {i+1}/{len(records)}，成功 {n_ok}")
-            print(f"[llm] 改写成功 {n_ok}/{len(records)}")
+            st = rw.rewrite_many(records, workers=args.llm_workers)
+            print(f"[llm] {st['workers']} 路并发，送出 {st['n_sent']} 条"
+                  f"（跳过受保护任务 {st['n_skipped_protected']} 条），"
+                  f"改写成功 {st['n_rewritten']}，用时 {st['seconds'] / 60:.1f} 分钟")
+            if st["rejected"]:
+                # 被拒的说明改写动了事实或过不了质检，回退到模板答案。
+                # 这个比例高就说明 prompt 或模型不合适，别闷头跑完。
+                print(f"       回退 {sum(st['rejected'].values())} 条："
+                      f"{st['rejected']}")
         else:
             print("[llm] provider=none，跳过改写")
 

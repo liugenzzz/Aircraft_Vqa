@@ -73,6 +73,8 @@ def main() -> int:
     ap.add_argument("--n", type=int, default=100)
     ap.add_argument("--llm-config", default=None,
                     help="模型池配置；默认取 build.yaml 里 llm.pool_config")
+    ap.add_argument("--workers", type=int, default=0,
+                    help="并发路数，默认按池里各模型的 concurrency 之和")
     ap.add_argument("--purpose", default="rewrite",
                     help="用 llm_pool.json 里哪个用途的参数")
     ap.add_argument("--seed", type=int, default=0)
@@ -110,10 +112,15 @@ def main() -> int:
         return 1
     print(f"\n模型池：\n{rw.pool.describe()}\n")
 
+    # 先存一份原答案：rewrite 是就地改的，改完再读就拿不到改写前的样子了
+    befores = {id(r): r["answer"] for r in picked}
+    st = rw.rewrite_many(picked, workers=args.workers, progress_every=50)
+    print(f"\n{st['workers']} 路并发，用时 {st['seconds']} 秒"
+          f"（{len(picked) / max(st['seconds'], 0.01):.1f} 条/秒）\n")
+
     rows, reasons = [], Counter()
     for i, r in enumerate(picked, 1):
-        before = r["answer"]
-        rw.rewrite(r)
+        before = befores[id(r)]
         ok = bool(r.get("rewritten"))
         if not ok:
             reasons[r.get("rewrite_rejected", "no_response")] += 1

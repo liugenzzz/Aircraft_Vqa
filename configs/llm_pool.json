@@ -10,7 +10,8 @@
     "         {\"models\": [{\"name\": \"qwen27b-31-8001\", \"api_key\": \"...\"}]}",
     "",
     "所有副本默认关思考（chat_template_kwargs.enable_thinking=false）；",
-    "服务端没吃这个参数时 <think> 块也会在客户端剥掉，双保险。"
+    "服务端没吃这个参数时 <think> 块也会在客户端剥掉，双保险。",
+    "concurrency 决定改写时的并发路数（各模型之和）。4 个副本 x 4 = 16 路；想再快就调大这个数，或用 --llm-workers 临时覆盖。"
   ],
   "strategy": "round_robin",
   "generation": {
@@ -45,7 +46,7 @@
       "weight": 1,
       "model": "Qwen3.8-27B",
       "base_url": "http://10.107.226.31:8001/v1/chat/completions",
-      "concurrency": 8,
+      "concurrency": 4,
       "tags": [
         "rewrite",
         "paraphrase",
@@ -59,7 +60,7 @@
       "weight": 1,
       "model": "Qwen3.8-27B",
       "base_url": "http://10.107.226.31:8002/v1/chat/completions",
-      "concurrency": 8,
+      "concurrency": 4,
       "tags": [
         "rewrite",
         "paraphrase",
@@ -73,7 +74,7 @@
       "weight": 1,
       "model": "Qwen3.8-27B",
       "base_url": "http://10.107.226.31:8003/v1/chat/completions",
-      "concurrency": 8,
+      "concurrency": 4,
       "tags": [
         "rewrite",
         "paraphrase",
@@ -87,7 +88,7 @@
       "weight": 1,
       "model": "Qwen3.8-27B",
       "base_url": "http://10.107.226.31:8004/v1/chat/completions",
-      "concurrency": 8,
+      "concurrency": 4,
       "tags": [
         "rewrite",
         "paraphrase",

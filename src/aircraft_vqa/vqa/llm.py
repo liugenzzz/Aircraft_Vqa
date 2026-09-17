@@ -104,6 +104,65 @@ class LLMRewriter:
         return record
 
 
+    # ------------------------------------------------------------ 批量
+    def default_workers(self) -> int:
+        """按池里各模型声明的 concurrency 之和决定并发路数。
+
+        串行跑是不现实的：纯文本答案有五万多条，一次调用十来秒，
+        排下来一百六十多小时。并发数由配置里每个副本的 concurrency 决定，
+        调它就能整体提速，不用改代码。
+        """
+        if not self.enabled:
+            return 0
+        return max(1, sum(max(1, m.concurrency)
+                          for m in self.pool.available(self.purpose)))
+
+    def rewrite_many(self, records: list, workers: int = 0,
+                     progress_every: int = 500, log=print) -> dict:
+        """并发改写一批记录，就地修改。返回统计。
+
+        受保护的任务（JSON / 多轮 / 选择题）先在本地筛掉，不占并发名额也
+        不发请求 —— 它们本来就不参与改写。
+        """
+        import concurrent.futures as cf
+        import threading
+        import time
+
+        if not self.enabled:
+            return {"enabled": False}
+        todo = [r for r in records if r.get("task") not in PROTECTED_TASKS]
+        n_skip = len(records) - len(todo)
+        workers = workers or self.default_workers()
+        lock = threading.Lock()
+        state = {"done": 0, "ok": 0, "t0": time.time()}
+
+        def one(r):
+            self.rewrite(r)
+            with lock:
+                state["done"] += 1
+                state["ok"] += int(bool(r.get("rewritten")))
+                d = state["done"]
+                if progress_every and d % progress_every == 0:
+                    el = time.time() - state["t0"]
+                    rate = d / el if el else 0
+                    left = (len(todo) - d) / rate if rate else 0
+                    log(f"  ...改写 {d}/{len(todo)}，成功 {state['ok']}，"
+                        f"{rate:.1f} 条/秒，预计还需 {left / 60:.0f} 分钟")
+
+        with cf.ThreadPoolExecutor(max_workers=workers) as ex:
+            list(ex.map(one, todo))
+
+        rejected = {}
+        for r in todo:
+            why = r.get("rewrite_rejected")
+            if why:
+                rejected[why] = rejected.get(why, 0) + 1
+        return {"enabled": True, "workers": workers, "n_total": len(records),
+                "n_skipped_protected": n_skip, "n_sent": len(todo),
+                "n_rewritten": state["ok"], "rejected": rejected,
+                "seconds": round(time.time() - state["t0"], 1)}
+
+
 def load_rewriter(cfg: dict) -> LLMRewriter:
     """cfg 取自 build.yaml 的 llm 段，只认 pool_config 一个键。"""
     return LLMRewriter.from_config((cfg or {}).get("pool_config"),
