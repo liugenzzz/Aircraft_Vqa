@@ -266,6 +266,23 @@ class VQABuilder:
         pool = self.qpool.get(task) or T.QUESTIONS.get(task, [""])
         return rng.choice(pool).format(**fields)
 
+    def _pick_disambiguated(self, task: str, rng, need_named: bool,
+                            named_marks: tuple, fallback: list) -> str:
+        """按"有没有消歧占位符"从合并池里选问法。
+
+        图里有多种缺陷时，问法必须点名问的是哪一处（靠 {region}/{defect}），
+        否则指代不清；只有一种时开放式问法就够。
+
+        以前是拿合并池和硬编码常量求交集来区分这两档 —— 扩写出来的问法
+        不在常量里，全被滤掉，问法库对这两个任务完全不起作用（实测
+        classification_open 82 -> 81、severity_action 77 -> 79，等于白扩）。
+        改成按占位符判断，扩写的问法就能正确落进对应那一档。
+        """
+        pool = self.qpool.get(task) or []
+        has = lambda q: any(m in q for m in named_marks)
+        cand = [q for q in pool if has(q) == need_named]
+        return rng.choice(cand or fallback)
+
     def _scope(self, s: UnifiedSample) -> UnifiedSample:
         """把不在本期范围内的缺陷类型降级为 other_anomaly。
 
@@ -540,10 +557,11 @@ class VQABuilder:
         name = self.tax.zh(t)
         if self.cfg.term_annotation:
             name = f"{name}（{self.tax.en(t)}）"
-        pool = (T.Q_CLASSIFY_NAMED if len(s.defect_types) > 1
-                else T.Q_CLASSIFY_OPEN)
-        q = rng.choice([x for x in self.qpool["classification_open"] if x in pool]
-                       or pool).format(region=d.region or "中部", **self._ctx(s))
+        named = len(s.defect_types) > 1
+        q = self._pick_disambiguated(
+            "classification_open", rng, named, ("{region}",),
+            T.Q_CLASSIFY_NAMED if named else T.Q_CLASSIFY_OPEN
+        ).format(region=d.region or "中部", **self._ctx(s))
         a = rng.choice(T.A_CLASSIFY_OPEN).format(defect=name, evidence=evidence)
         return self._rec(s, "classification_open", "recognition", q, a,
                          None, {"target_type": t, "answer_defect_types": [t]})
@@ -587,12 +605,12 @@ class VQABuilder:
             name = f"{name}（{info['zh']}）"
         # 图里有多种缺陷时，问法必须点名是哪一处 —— 单轮同样存在指代歧义，
         # 用"该缺陷"配只讲其中一个的答案，是在教模型遇到歧义就默认挑第一个。
-        pool = (T.Q_SEVERITY_NAMED if len(s.defect_types) > 1
-                else T.Q_SEVERITY_ONE)
-        q = rng.choice([x for x in self.qpool["severity_action"] if x in pool]
-                       or pool).format(
-            defect=self.tax.zh(d.type), region=d.region or "中部",
-            **self._ctx(s))
+        named = len(s.defect_types) > 1
+        q = self._pick_disambiguated(
+            "severity_action", rng, named, ("{defect}", "{region}"),
+            T.Q_SEVERITY_NAMED if named else T.Q_SEVERITY_ONE
+        ).format(defect=self.tax.zh(d.type), region=d.region or "中部",
+                 **self._ctx(s))
         a = rng.choice(T.A_SEVERITY).format(
             severity=self.tax.severity_zh(d.severity),
             severity_desc=self.tax.severity_desc(d.severity),
