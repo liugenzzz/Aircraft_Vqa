@@ -249,3 +249,74 @@ def test_truncated_cache_line_does_not_break_resume(server, tmp_path):
     st = rw.rewrite_many(_recs(20), progress_every=0, cache_path=str(cache))
     assert st["n_cache_hit"] == 20
     assert len(CALLS) == 0
+
+
+def test_inspect_cache_reports_acceptance_rate(tmp_path, capsys):
+    """行数只说明它在动，说明不了质量 —— 跑到一半要能看出采纳率。"""
+    import importlib.util
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    sys.path.insert(0, os.path.join(root, "scripts"))
+    spec = importlib.util.spec_from_file_location(
+        "insp", os.path.join(root, "scripts", "inspect_rewrite_cache.py"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+
+    cache = tmp_path / "c.jsonl"
+    lines = [{"k": f"k{i}", "a": f"改写后的第 {i} 条。", "m": "r1"}
+             for i in range(80)]
+    lines += [{"k": f"b{i}", "a": None, "why": "fact_drift"} for i in range(20)]
+    cache.write_text("\n".join(json.dumps(x, ensure_ascii=False)
+                               for x in lines) + "\n", encoding="utf-8")
+    argv = sys.argv
+    sys.argv = ["x", "--cache", str(cache)]
+    try:
+        assert m.main() == 0
+    finally:
+        sys.argv = argv
+    out = capsys.readouterr().out
+    assert "80（80.0%）" in out, out
+    assert "fact_drift" in out
+    assert "采纳率正常" in out
+
+
+def test_inspect_cache_warns_when_rate_collapses(tmp_path, capsys):
+    """采纳率塌了要明确叫停，而不是让人跑满七小时才发现。"""
+    import importlib.util
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    spec = importlib.util.spec_from_file_location(
+        "insp2", os.path.join(root, "scripts", "inspect_rewrite_cache.py"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    cache = tmp_path / "c.jsonl"
+    lines = [{"k": f"k{i}", "a": "好的。", "m": "r1"} for i in range(10)]
+    lines += [{"k": f"b{i}", "a": None, "why": "fact_drift"} for i in range(90)]
+    cache.write_text("\n".join(json.dumps(x, ensure_ascii=False)
+                               for x in lines) + "\n", encoding="utf-8")
+    argv = sys.argv
+    sys.argv = ["x", "--cache", str(cache)]
+    try:
+        m.main()
+    finally:
+        sys.argv = argv
+    out = capsys.readouterr().out
+    assert "建议停掉" in out, out
+
+
+def test_inspect_cache_tolerates_a_half_written_line(tmp_path, capsys):
+    """跑的过程中最后一行可能写到一半，不能因此报错。"""
+    import importlib.util
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    spec = importlib.util.spec_from_file_location(
+        "insp3", os.path.join(root, "scripts", "inspect_rewrite_cache.py"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    cache = tmp_path / "c.jsonl"
+    cache.write_text(json.dumps({"k": "a", "a": "改写。", "m": "r1"}) +
+                     '\n{"k": "半行就断', encoding="utf-8")
+    argv = sys.argv
+    sys.argv = ["x", "--cache", str(cache)]
+    try:
+        assert m.main() == 0
+    finally:
+        sys.argv = argv
+    assert "还在写" in capsys.readouterr().out
