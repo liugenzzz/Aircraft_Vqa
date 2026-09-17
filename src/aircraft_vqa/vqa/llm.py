@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Optional
 
@@ -117,14 +118,33 @@ class LLMRewriter:
         return max(1, sum(max(1, m.concurrency)
                           for m in self.pool.available(self.purpose)))
 
+    @staticmethod
+    def cache_key(r: dict) -> str:
+        """一条记录的稳定标识，用于断点续跑。
+
+        用 qa_id 不行：它跟随机种子走，改一次配置就全变了。改用
+        (任务, 问题, 模板答案) 的哈希 —— 只要这三样没变，之前改写过的
+        结果就还能用。
+        """
+        import hashlib
+        raw = "\u0000".join((r.get("task") or "",
+                              r.get("question") or "",
+                              r.get("answer_template") or r.get("answer") or ""))
+        return hashlib.md5(raw.encode("utf-8")).hexdigest()
+
     def rewrite_many(self, records: list, workers: int = 0,
-                     progress_every: int = 500, log=print) -> dict:
+                     progress_every: int = 500, log=print,
+                     cache_path: str = "") -> dict:
         """并发改写一批记录，就地修改。返回统计。
 
         受保护的任务（JSON / 多轮 / 选择题）先在本地筛掉，不占并发名额也
         不发请求 —— 它们本来就不参与改写。
+
+        给了 cache_path 就边跑边落盘：五万条要跑七到十个小时，中途崩一次
+        全白跑是不能接受的。重跑时先读缓存，命中的直接套用、不再发请求。
         """
         import concurrent.futures as cf
+        import json as _json
         import threading
         import time
 
@@ -132,15 +152,58 @@ class LLMRewriter:
             return {"enabled": False}
         todo = [r for r in records if r.get("task") not in PROTECTED_TASKS]
         n_skip = len(records) - len(todo)
+
+        # 读缓存，命中的直接套用
+        cache, n_hit = {}, 0
+        if cache_path and os.path.exists(cache_path):
+            with open(cache_path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        d = _json.loads(line)
+                    except Exception:
+                        continue      # 崩在写一半时最后一行可能是残的
+                    if d.get("k"):
+                        cache[d["k"]] = d
+            pending = []
+            for r in todo:
+                hit = cache.get(self.cache_key(r))
+                if hit is None:
+                    pending.append(r)
+                    continue
+                n_hit += 1
+                if hit.get("a"):
+                    r["answer_template"] = r["answer"]
+                    r["answer"] = hit["a"]
+                    r["rewritten"] = True
+                    r["rewritten_by"] = hit.get("m")
+                elif hit.get("why"):
+                    r["rewrite_rejected"] = hit["why"]
+            log(f"  断点续跑：缓存命中 {n_hit} 条，还需改写 {len(pending)} 条")
+            todo = pending
+
         workers = workers or self.default_workers()
         lock = threading.Lock()
+        fh = open(cache_path, "a", encoding="utf-8") if cache_path else None
         state = {"done": 0, "ok": 0, "t0": time.time()}
 
         def one(r):
             self.rewrite(r)
             with lock:
                 state["done"] += 1
-                state["ok"] += int(bool(r.get("rewritten")))
+                ok = bool(r.get("rewritten"))
+                state["ok"] += int(ok)
+                if fh:
+                    fh.write(_json.dumps(
+                        {"k": self.cache_key(r),
+                         "a": r["answer"] if ok else None,
+                         "m": r.get("rewritten_by"),
+                         "why": r.get("rewrite_rejected")},
+                        ensure_ascii=False) + "\n")
+                    if state["done"] % 200 == 0:
+                        fh.flush()          # 崩了最多丢这 200 条
                 d = state["done"]
                 if progress_every and d % progress_every == 0:
                     el = time.time() - state["t0"]
@@ -149,17 +212,24 @@ class LLMRewriter:
                     log(f"  ...改写 {d}/{len(todo)}，成功 {state['ok']}，"
                         f"{rate:.1f} 条/秒，预计还需 {left / 60:.0f} 分钟")
 
-        with cf.ThreadPoolExecutor(max_workers=workers) as ex:
-            list(ex.map(one, todo))
+        try:
+            with cf.ThreadPoolExecutor(max_workers=workers) as ex:
+                list(ex.map(one, todo))
+        finally:
+            if fh:
+                fh.flush()
+                fh.close()
 
         rejected = {}
-        for r in todo:
+        for r in records:
             why = r.get("rewrite_rejected")
             if why:
                 rejected[why] = rejected.get(why, 0) + 1
+        n_rewritten = sum(1 for r in records if r.get("rewritten"))
         return {"enabled": True, "workers": workers, "n_total": len(records),
                 "n_skipped_protected": n_skip, "n_sent": len(todo),
-                "n_rewritten": state["ok"], "rejected": rejected,
+                "n_cache_hit": n_hit, "n_rewritten": n_rewritten,
+                "rejected": rejected,
                 "seconds": round(time.time() - state["t0"], 1)}
 
 

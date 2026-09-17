@@ -44,6 +44,10 @@ class _H(BaseHTTPRequestHandler):
             CALLS.append(src)
             i = len(CALLS)
         mode = self.server.mode
+        # 真实调用约 11 秒，毫秒级的假响应里线程开销会盖过并发收益，
+        # 测出来的就不是"并发有没有用"，而是"HTTP 开销有多大"。
+        import time as _t
+        _t.sleep(getattr(self.server, "delay", 0.0))
         if mode == "corrupt":                       # 改数字 -> 该被拦
             out = re.sub(r"\d+", lambda m: str(int(m.group()) + 1), src, count=1)
         elif mode == "thinking":                    # 带思维链
@@ -67,10 +71,11 @@ class _H(BaseHTTPRequestHandler):
 def server():
     made = []
 
-    def start(mode="polish"):
+    def start(mode="polish", delay=0.0):
         CALLS.clear()
         s = _T(("127.0.0.1", 0), _H)
         s.mode = mode
+        s.delay = delay
         threading.Thread(target=s.serve_forever, daemon=True).start()
         made.append(s)
         return s.server_address[1]
@@ -90,8 +95,10 @@ def _rw(port, n_models=4, conc=4):
 
 
 def _recs(n):
-    return [{"task": "description", "question": "请描述该口盖的状况。",
-             "answer": f"检查发现 {i % 4 + 1} 处异常，位于画面左上。"}
+    # 每条都必须不同：问句和答案都一样的话缓存键会撞，
+    # "命中率 100%" 就成了夹具的假象而不是功能正常。
+    return [{"task": "description", "question": f"请描述第 {i} 处的状况。",
+             "answer": f"第 {i} 处检查发现 {i % 4 + 1} 处异常，位于画面左上。"}
             for i in range(n)]
 
 
@@ -154,7 +161,7 @@ def test_empty_response_keeps_the_template_answer(server):
 def test_concurrency_actually_overlaps(server):
     """16 路并发的耗时应当明显低于串行 —— 不然等于白写。"""
     import time
-    rw = _rw(server(), n_models=4, conc=4)
+    rw = _rw(server(delay=0.03), n_models=4, conc=4)
     recs = _recs(64)
     t0 = time.time()
     rw.rewrite_many(recs, workers=1, progress_every=0)
@@ -176,3 +183,69 @@ def test_original_answer_is_kept_for_comparison(server):
     for r, o in zip(recs, orig):
         assert r["answer_template"] == o
         assert r["answer"] != o
+
+
+# ---------------------------------------------------------------- 断点续跑
+def test_cache_lets_a_crashed_run_resume(server, tmp_path):
+    """五万条要跑七到十小时，中途崩一次全白跑是不能接受的。"""
+    rw = _rw(server())
+    cache = str(tmp_path / "c.jsonl")
+
+    first = _recs(120)
+    rw.rewrite_many(first[:50], progress_every=0, cache_path=cache)
+    n_first = len(CALLS)
+    assert n_first == 50
+
+    CALLS.clear()
+    second = _recs(120)
+    st = rw.rewrite_many(second, progress_every=0, cache_path=cache)
+    assert st["n_cache_hit"] == 50, st
+    assert len(CALLS) == 70, f"命中的还在重发：{len(CALLS)}"
+    # 命中的结果必须和第一轮一模一样
+    for a, b in zip(first[:50], second[:50]):
+        assert a["answer"] == b["answer"]
+        assert b.get("rewritten")
+
+
+def test_cache_key_survives_seed_change():
+    """用 qa_id 当键不行 —— 它跟随机种子走，改一次配置缓存就全失效。"""
+    from aircraft_vqa.vqa.llm import LLMRewriter as R
+    a = {"task": "description", "question": "q", "answer": "a", "qa_id": "x1"}
+    b = {"task": "description", "question": "q", "answer": "a", "qa_id": "完全不同"}
+    assert R.cache_key(a) == R.cache_key(b)
+    c = dict(a, answer="换了个答案")
+    assert R.cache_key(a) != R.cache_key(c)
+
+
+def test_cache_key_uses_template_answer_after_rewrite():
+    """改写之后 answer 变了，键必须仍按模板答案算，否则二次重跑全部落空。"""
+    from aircraft_vqa.vqa.llm import LLMRewriter as R
+    before = {"task": "description", "question": "q", "answer": "模板答案"}
+    after = {"task": "description", "question": "q", "answer": "改写后的话",
+             "answer_template": "模板答案"}
+    assert R.cache_key(before) == R.cache_key(after)
+
+
+def test_rejections_are_cached_too(server, tmp_path):
+    """被事实校验拒掉的也要记下来，否则每次重跑都白白重试一遍。"""
+    rw = _rw(server("corrupt"))
+    cache = str(tmp_path / "c.jsonl")
+    rw.rewrite_many(_recs(30), progress_every=0, cache_path=cache)
+    CALLS.clear()
+    st = rw.rewrite_many(_recs(30), progress_every=0, cache_path=cache)
+    assert st["n_cache_hit"] == 30
+    assert len(CALLS) == 0
+    assert st["rejected"].get("fact_drift") == 30
+
+
+def test_truncated_cache_line_does_not_break_resume(server, tmp_path):
+    """崩在写一半时最后一行可能是残的，不能因此整个缓存作废。"""
+    rw = _rw(server())
+    cache = tmp_path / "c.jsonl"
+    rw.rewrite_many(_recs(20), progress_every=0, cache_path=str(cache))
+    with open(cache, "a", encoding="utf-8") as f:
+        f.write('{"k": "半行就断了')
+    CALLS.clear()
+    st = rw.rewrite_many(_recs(20), progress_every=0, cache_path=str(cache))
+    assert st["n_cache_hit"] == 20
+    assert len(CALLS) == 0

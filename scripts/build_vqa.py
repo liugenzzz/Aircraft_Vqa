@@ -105,6 +105,9 @@ def main() -> int:
     ap.add_argument("--check-images", action="store_true",
                     help="质检时逐条确认图片存在（慢但稳）")
     ap.add_argument("--llm-rewrite", action="store_true", help="启用大模型改写层")
+    ap.add_argument("--llm-cache", default="",
+                    help="改写断点缓存路径，默认 <out>/rewrite_cache.jsonl。"
+                         "五万条要跑七到十小时，崩了重跑同一条命令即可续上")
     ap.add_argument("--llm-workers", type=int, default=0,
                     help="改写并发路数，默认按池里各模型的 concurrency 之和")
     ap.add_argument("--mix-general", default=None,
@@ -318,7 +321,13 @@ def main() -> int:
     if args.llm_rewrite:
         rw = load_rewriter(cfg.get("llm", {}))
         if rw.enabled:
-            st = rw.rewrite_many(records, workers=args.llm_workers)
+            cache = args.llm_cache or os.path.join(args.out, "rewrite_cache.jsonl")
+            os.makedirs(args.out, exist_ok=True)
+            print(f"[llm] 断点缓存 -> {cache}（崩了重跑同一条命令即可续上）")
+            st = rw.rewrite_many(records, workers=args.llm_workers,
+                                 cache_path=cache)
+            if st.get("n_cache_hit"):
+                print(f"       本次命中缓存 {st['n_cache_hit']} 条")
             print(f"[llm] {st['workers']} 路并发，送出 {st['n_sent']} 条"
                   f"（跳过受保护任务 {st['n_skipped_protected']} 条），"
                   f"改写成功 {st['n_rewritten']}，用时 {st['seconds'] / 60:.1f} 分钟")
