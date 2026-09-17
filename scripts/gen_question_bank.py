@@ -41,6 +41,15 @@ from datetime import datetime, timezone
 
 import _bootstrap  # noqa: F401
 
+# 重定向到文件时 Python 默认块缓冲，要攒够几 KB 才落盘 —— 长任务
+# nohup 出去，日志会空好几分钟，看起来像没在跑。这里强制行缓冲，
+# 不依赖调用方记得加 -u。
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+
 from aircraft_vqa.vqa import templates as T
 
 PROMPT = """你在为一个民航机务维修视觉检查助手准备训练数据的**指令模板**。

@@ -33,6 +33,15 @@ import sys
 from collections import Counter
 
 import _bootstrap  # noqa: F401
+
+# 重定向到文件时 Python 默认块缓冲，要攒够几 KB 才落盘 —— 长任务
+# nohup 出去，日志会空好几分钟，看起来像没在跑。这里强制行缓冲，
+# 不依赖调用方记得加 -u。
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(line_buffering=True)
+    except Exception:
+        pass
 import yaml
 
 from aircraft_vqa.qc import check_record

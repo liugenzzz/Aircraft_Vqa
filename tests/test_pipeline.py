@@ -1496,3 +1496,28 @@ def test_size_word_returns_a_complete_phrase():
     from aircraft_vqa.geometry import size_word
     for r in (0.0005, 0.005, 0.02, 0.1, 0.3):
         assert size_word(r).startswith("范围"), size_word(r)
+
+
+def test_long_running_scripts_force_line_buffering():
+    """重定向到文件时 Python 默认块缓冲，要攒够几 KB 才落盘。
+
+    真实踩到：nohup 跑七小时的改写，tail -f 看到的是空文件，
+    看起来像没在跑。长任务的脚本必须自己强制行缓冲，
+    不能指望调用方记得加 -u。
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for name in ("build_vqa.py", "llm_smoke.py", "gen_question_bank.py"):
+        src = open(os.path.join(root, "scripts", name), encoding="utf-8").read()
+        assert "line_buffering=True" in src, f"{name} 没强制行缓冲"
+
+
+def test_output_appears_immediately_when_redirected(tmp_path):
+    """真发一次：重定向到文件后立刻就该有内容。"""
+    import subprocess
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    log = tmp_path / "x.log"
+    with open(log, "w") as f:
+        subprocess.run([sys.executable, os.path.join(root, "scripts",
+                                                     "build_vqa.py"), "--help"],
+                       stdout=f, stderr=subprocess.STDOUT, cwd=root, timeout=60)
+    assert log.read_text(encoding="utf-8").strip(), "重定向后日志是空的"
