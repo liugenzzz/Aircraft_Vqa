@@ -163,7 +163,7 @@ Q_REGION_YESNO = [
 ]
 
 A_REGION_POSITIVE = [
-    "{box} 区域内存在{defect}，位于画面{region}，缺陷范围{size}。",
+    "{box} 区域内存在{defect}，位于画面{region}，{size}。",
     "该区域存在异常：{defect}（{region}，{size}）。",
     "有。{box} 内可见{defect}。",
 ]

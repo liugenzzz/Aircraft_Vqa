@@ -56,6 +56,15 @@ def check_record(r: dict, check_image: bool = False) -> list:
             errs.append("unfilled_placeholder_q")
     if re.search(r"\{[a-z_]+\}", r.get("answer", "")):
         errs.append("unfilled_placeholder_a")
+    for field in ("question", "answer"):
+        w = duplicated_word(r.get(field, "") or "")
+        if w:
+            errs.append(f"duplicated_word_{field[0]}:{w}")
+    for t in (r.get("turns") or []):
+        w = duplicated_word(t.get("value", "") or t.get("answer", "") or "")
+        if w:
+            errs.append(f"duplicated_word_turn:{w}")
+            break
 
     if check_image:
         for p in (r.get("images") or [r.get("image", "")]):
@@ -168,6 +177,20 @@ def check_record(r: dict, check_image: bool = False) -> list:
         if yn == "yes" and re.search(r"未(见|发现)异常|(?<!不)合格。", r["answer"]):
             errs.append("positive_answer_says_negative")
     return errs
+
+
+# 拼接产生的叠词。size_word/severity 这类工具返回的是**完整短语**
+# （"范围中等"而不是"中等"），模板或 f-string 再补一次前缀就会拼出
+# "范围范围中等"。只读 stats 看不出来，只有读答案原文才发现。
+DUP_WORDS = ("范围范围", "程度程度", "严重严重", "位于位于", "缺陷缺陷",
+             "检查检查", "区域区域")
+
+
+def duplicated_word(text: str) -> str:
+    for w in DUP_WORDS:
+        if w in text:
+            return w
+    return ""
 
 
 def run_qc(records: list, check_image: bool = False) -> tuple:

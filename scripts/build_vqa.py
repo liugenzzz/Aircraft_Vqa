@@ -147,10 +147,16 @@ def main() -> int:
     if max_share or ds_weights:
         samples, rep = cap_dataset_share(samples, max_share, ds_weights,
                                          cfg.get("seed", 0))
-        tot = sum(r["after"] for r in rep.values()) or 1
+        # rep 里除了各源的计数，还可能有 "_note" 这种说明项（字符串）。
+        # 之前直接当 dict 取，源数少于 4 个时 25% 上限无解、note 一写就崩。
+        note = rep.get("_note")
+        counts = {k: v for k, v in rep.items() if isinstance(v, dict)}
+        tot = sum(r["after"] for r in counts.values()) or 1
         print(f"[source] 限流后 {tot} 条"
               + (f"（单源上限 {max_share:.0%}）" if max_share else ""))
-        for ds, r in sorted(rep.items(), key=lambda kv: -kv[1]["after"]):
+        if note:
+            print(f"         注：{note}")
+        for ds, r in sorted(counts.items(), key=lambda kv: -kv[1]["after"]):
             mark = "  <- 限流" if r["after"] < r["before"] else (
                 "  <- 过采样" if r["after"] > r["before"] else "")
             print(f"         {ds:24s} {r['before']:>6d} -> "
@@ -323,6 +329,16 @@ def main() -> int:
     # ---- 切分 + 导出 ----
     splits = group_split(records, tuple(cfg.get("split_ratios", [0.95, 0.03, 0.02])),
                          cfg.get("seed", 0))
+    # 划分是按"图片的连通分量"整组切的（pair_compare 会把两张图连起来），
+    # 组粒度比单个样本粗，小数据集上 val/test 可能被整组甩空。
+    # 空的验证集看起来和"训练很顺"一模一样，必须说出来。
+    for name in ("val", "test"):
+        n = len(splits.get(name) or [])
+        if n == 0:
+            print(f"  ⚠ {name} 划分是空的 —— 样本太少，整组都落进了 train。"
+                  "这样评估无从谈起，加大数据量或调 split_ratios。")
+        elif n < 50:
+            print(f"  ⚠ {name} 划分只有 {n} 条，样本量不足以说明问题。")
     exp = cfg.get("export", {})
     fmt = args.format or exp.get("format", "sharegpt")
     n_total = 0

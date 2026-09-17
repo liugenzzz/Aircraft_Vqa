@@ -551,7 +551,10 @@ class VQABuilder:
         if info:
             evidence = f"，程度为{info['zh']}：{info['desc']}。"
         elif d.region:
-            evidence = f"，位于画面{d.region}，范围{size_word(d.area_ratio)}。"
+            # size_word 返回的是完整短语（"范围中等"），前面别再补"范围"，
+            # 否则拼出"范围范围中等"。这个错误在模板扫描里看不到 ——
+            # 它在 f-string 里，不在 templates.py。
+            evidence = f"，位于画面{d.region}，{size_word(d.area_ratio)}。"
         else:
             evidence = "。"
         name = self.tax.zh(t)

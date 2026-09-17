@@ -204,3 +204,89 @@ def test_disabled_when_ratio_not_positive():
     from aircraft_vqa.balance import cap_class_imbalance
     recs = _cls_recs(REAL)
     assert len(cap_class_imbalance(recs, set(), 3.0)) == len(recs)
+
+
+# ---------------------------------------------------------------- 划分隔离
+def _recs(n_samples, pair_rate, seed=0):
+    """模拟真实构成：一部分 pair_compare 额外带一张别的样本的参考图。"""
+    import random
+    rng = random.Random(seed)
+    imgs = [f"/img/{i}.jpg" for i in range(n_samples)]
+    out = []
+    for i in range(n_samples):
+        for _ in range(4):
+            r = {"sample_id": f"s/{i}", "images": [imgs[i]], "task": "x"}
+            if rng.random() < pair_rate:
+                r = {"sample_id": f"s/{i}", "task": "pair_compare",
+                     "images": [imgs[i], rng.choice(imgs)]}
+            out.append(r)
+    return out
+
+
+def _leak(splits):
+    from itertools import combinations
+    sets = {k: {p for r in v for p in r.get("images", [])}
+            for k, v in splits.items()}
+    return sum(len(sets[a] & sets[b]) for a, b in combinations(sets, 2))
+
+
+def test_pair_compare_reference_image_does_not_cross_splits():
+    """真实踩到的坑：pair_compare 从参考图池额外取一张正常件图，
+    那张图属于另一个 sample。于是 A 的图在 train 当主体、
+    同时在 test 给 B 当参考图 —— 模型训练时见过，测试集就是漏的。
+    出厂检查在真实构建产物里抓到过（train 与 test 共用 2 张图）。"""
+    from aircraft_vqa.balance import group_split
+    assert _leak(group_split(_recs(3000, 0.10), (0.9, 0.05, 0.05), 0)) == 0
+
+
+def test_no_leak_across_pair_rates_and_seeds():
+    from aircraft_vqa.balance import group_split
+    for rate in (0.0, 0.05, 0.2, 0.5):
+        for seed in (0, 7):
+            s = group_split(_recs(1500, rate, seed), (0.9, 0.05, 0.05), seed)
+            assert _leak(s) == 0, (rate, seed)
+
+
+def test_splits_are_not_degenerate_at_scale():
+    """隔离不能靠把所有东西塞进 train 来实现。"""
+    from aircraft_vqa.balance import group_split
+    s = group_split(_recs(20000, 0.08), (0.95, 0.03, 0.02), 0)
+    assert len(s["val"]) > 200, len(s["val"])
+    assert len(s["test"]) > 200, len(s["test"])
+
+
+def test_same_sample_still_stays_together():
+    """同一个样本的多条问答仍必须在同一划分里。"""
+    from aircraft_vqa.balance import group_split
+    s = group_split(_recs(2000, 0.08), (0.9, 0.05, 0.05), 0)
+    where = {}
+    for name, rows in s.items():
+        for r in rows:
+            prev = where.setdefault(r["sample_id"], name)
+            assert prev == name, f"{r['sample_id']} 同时出现在 {prev} 和 {name}"
+
+
+def test_records_without_images_still_split():
+    """没有 images 字段的记录不能被漏掉。"""
+    from aircraft_vqa.balance import group_split
+    recs = [{"sample_id": f"s/{i}", "task": "x"} for i in range(500)]
+    s = group_split(recs, (0.9, 0.05, 0.05), 0)
+    assert sum(len(v) for v in s.values()) == 500
+
+
+def test_build_handles_note_entry_in_report(tmp_path):
+    """cap_dataset_share 在源数少于 1/max_share 时会往报告里塞 _note 字符串，
+    build_vqa 原来把报告里每一项都当 dict 取，源少时直接崩：
+
+        TypeError: string indices must be integers
+
+    用 --only 跑少数几个源就会踩到。
+    """
+    from aircraft_vqa.balance import cap_dataset_share
+    samples = mk("a", 500, 250) + mk("b", 500, 250)
+    _, rep = cap_dataset_share(samples, 0.25)
+    assert "_note" in rep and isinstance(rep["_note"], str)
+    counts = {k: v for k, v in rep.items() if isinstance(v, dict)}
+    assert sum(r["after"] for r in counts.values()) > 0
+    # 这一行就是崩过的那句
+    assert sorted(counts.items(), key=lambda kv: -kv[1]["after"])

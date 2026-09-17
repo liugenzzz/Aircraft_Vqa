@@ -1457,3 +1457,42 @@ def test_every_test_file_runs_standalone():
         if r.returncode != 0:
             bad.append(f"{os.path.basename(f)}: {r.stdout[-300:]}")
     assert not bad, "这些文件单独收集就失败：\n" + "\n".join(bad)
+
+
+def test_qc_catches_duplicated_words():
+    """真实踩到的坑：size_word 返回的是完整短语"范围中等"，
+    builder 的 f-string 又补了个"范围"，拼出"范围范围中等"。
+    这种错误在模板扫描里看不到（它在 f-string 里），只读 stats 也看不出来，
+    只有把答案原文读出来才发现。
+    """
+    from aircraft_vqa.qc import check_record
+    bad = {"question": "这是什么缺陷？",
+           "answer": "该异常是螺纹损伤，位于画面正中，范围范围中等。"}
+    errs = check_record(bad)
+    assert any("duplicated_word" in e for e in errs), errs
+    ok = {"question": "这是什么缺陷？",
+          "answer": "该异常是螺纹损伤，位于画面正中，范围中等。"}
+    assert not [e for e in check_record(ok) if "duplicated" in e]
+
+
+def test_no_template_double_prefixes_a_phrase_helper():
+    """size_word/severity 这类返回完整短语的工具，前面不许再补前缀 ——
+    模板和 builder 的 f-string 都要查。"""
+    import glob
+    import re as _re
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    bad = []
+    for f in glob.glob(os.path.join(root, "src", "**", "*.py"), recursive=True):
+        src = open(f, encoding="utf-8").read()
+        for m in _re.finditer(r"范围\s*\{size[^}]*\}|范围\s*\{size_word", src):
+            bad.append(f"{os.path.basename(f)}: {m.group(0)}")
+        for m in _re.finditer(r"范围\{size_word\(", src):
+            bad.append(f"{os.path.basename(f)}: {m.group(0)}")
+    assert not bad, "这些地方会拼出叠词：" + "; ".join(bad)
+
+
+def test_size_word_returns_a_complete_phrase():
+    """约定：size_word 返回完整短语，调用方直接用，不要加前缀。"""
+    from aircraft_vqa.geometry import size_word
+    for r in (0.0005, 0.005, 0.02, 0.1, 0.3):
+        assert size_word(r).startswith("范围"), size_word(r)

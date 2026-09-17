@@ -296,11 +296,50 @@ def dedup(records: list) -> list:
 
 
 def group_split(records: list, ratios=(0.95, 0.03, 0.02), seed: int = 0) -> dict:
-    """按 sample_id 哈希分组切分，同一张图不跨 split。"""
+    """按**图片的连通分量**切分，同一张图绝不跨 split。
+
+    只按 sample_id 哈希是不够的：pair_compare 会从参考图池里额外取一张
+    正常件图，那张图属于另一个 sample。于是 A 的图在 train 里当主体，
+    同时在 test 里给 B 当参考图 —— 模型训练时见过这张图，测试集就是漏的。
+    实测确实发生了（train 与 test 共用 2 张图）。
+
+    做法：把"同一条记录里出现的图片"并到一个组，整组一起分。
+    """
     tr, va, te = ratios
+
+    # 并查集：同一条记录里的图片必须同组
+    parent = {}
+
+    def find(x):
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    def keys_of(r):
+        """这条记录牵涉到的所有 key：主 sample_id + 它用到的每张图。"""
+        ks = [f"sid:{r['sample_id']}"]
+        ks += [f"img:{p}" for p in (r.get("images") or [])
+               if isinstance(p, str)]
+        if isinstance(r.get("image"), str):
+            ks.append(f"img:{r['image']}")
+        return ks
+
+    for r in records:
+        ks = keys_of(r)
+        for k in ks[1:]:
+            union(ks[0], k)
+
     out = {"train": [], "val": [], "test": []}
     for r in records:
-        h = int(hashlib.md5(f"{seed}:{r['sample_id']}".encode()).hexdigest()[:8], 16)
+        root = find(keys_of(r)[0])
+        h = int(hashlib.md5(f"{seed}:{root}".encode()).hexdigest()[:8], 16)
         p = (h % 10000) / 10000.0
         if p < tr:
             out["train"].append(r)
